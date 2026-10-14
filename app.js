@@ -19,6 +19,8 @@ const ICON = {
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M20 16l-5-5-8 8"/></svg>',
   calc: '<svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg>',
+  mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>',
+  stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
 };
 
 function toast(msg) {
@@ -33,7 +35,7 @@ function toast(msg) {
 const KEY = "macros.v1";
 const DRAFT_KEY = "macros.draft";
 const DEFAULT = {
-  profile: { name: "", sex: "m", age: "", height: "", weight: "", bodyFat: "", neat: "light", sessions: 4, hours: 1.5, intensity: "mod", goal: "maint", manualAdj: 0, theme: "auto" },
+  profile: { name: "", sex: "m", age: "", height: "", weight: "", bodyFat: "", neat: "light", sessions: 4, hours: 1.5, intensity: "mod", goal: "maint", manualAdj: 0, theme: "auto", voiceLang: "ca-ES" },
   foods: [], days: {}, weights: [],
 };
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -141,6 +143,7 @@ function applyTheme() {
 
 // ——————————————————— navegació ———————————————————
 function setTab(tab) {
+  if (voice && tab !== "meal") { voice.rec.abort(); voice = null; }
   UI.tab = tab;
   $$("#tabbar button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
   render();
@@ -230,7 +233,7 @@ function viewToday() {
 
   // Menjars
   const meals = [...(d.meals || [])].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
-  html += `<section class="card"><h2>Menjars <span class="sub"><button class="btn sm primary" data-action="goto" data-tab="meal">${ICON.plus}Afegir</button></span></h2>`;
+  html += `<section class="card"><h2>Menjars <span class="sub" style="display:flex;gap:6px"><button class="btn sm" data-action="voice-quick" aria-label="Dicta un menjar">${ICON.mic}Dicta</button><button class="btn sm primary" data-action="goto" data-tab="meal">${ICON.plus}Afegir</button></span></h2>`;
   if (!meals.length) html += `<div class="empty">Encara no has registrat res aquest dia.</div>`;
   for (const m of meals) {
     const mt = mealTotals(m);
@@ -273,9 +276,13 @@ function viewMeal() {
     <label class="field"><span>Àpat</span>
       <select class="input" data-draft="type">${MEAL_TYPES.map(t => `<option ${t === dr.type ? "selected" : ""}>${t}</option>`).join("")}</select></label>
     <label class="field"><span>Què has menjat?</span>
-      <textarea class="input" data-draft="text" placeholder="Ex: 200g de pollastre, 50g de pebrot i 150g d'arròs">${esc(dr.text)}</textarea></label>
+      <div class="voice-wrap">
+        <textarea class="input" data-draft="text" id="meal-text" placeholder="Escriu o dicta: 200g de pollastre, 50g de pebrot i 150g d'arròs">${esc(dr.text)}</textarea>
+        <button type="button" class="mic-btn" id="mic-btn" data-action="voice" aria-label="Dicta amb la veu">${ICON.mic}</button>
+      </div></label>
+    <div class="voice-status" id="voice-status" hidden></div>
     <button class="btn primary block" data-action="meal-parse">${ICON.calc}Calcula</button>
-    <p class="small faint" style="margin:10px 2px 0">Accepta grams (g), kg, ml i unitats ("2 ous", "1 iogurt", "1 cullerada d'oli", "1 scoop whey"). Primer busca als teus aliments i, si no, als genèrics.</p>
+    <p class="small faint" style="margin:10px 2px 0">Toca el micròfon i digues, per exemple, <i>"per dinar dos-cents grams de pollastre i cent cinquanta d'arròs"</i>. Accepta grams, kg, ml i unitats ("2 ous", "1 iogurt", "1 cullerada d'oli", "1 scoop whey").</p>
   </section>
   <div id="lines">${dr.lines.map(lineHTML).join("")}</div>
   <button class="btn block" data-action="line-add" style="margin-bottom:4px">${ICON.plus}Afegir aliment a mà</button>
@@ -349,6 +356,79 @@ function recentHTML() {
 function mealToLines(m) {
   return m.items.map(i => ({ id: uid(), name: i.name, grams: i.grams, foodId: i.foodId && foodById(i.foodId) ? i.foodId : null }));
 }
+function parseDraftText() {
+  const text = UI.draft.text.trim();
+  if (!text) { toast("Escriu o dicta què has menjat"); return; }
+  const parsed = parseMealText(text, allFoods());
+  const keep = UI.draft.lines.filter(l => l.name.trim() && l.fromText !== true);
+  UI.draft.lines = [...keep, ...parsed.map(r => ({ id: uid(), name: r.name, grams: r.grams, foodId: r.food ? r.food.id : null, fromText: true }))];
+  saveDraft();
+  $("#lines").innerHTML = UI.draft.lines.map(lineHTML).join("");
+  refreshAllLines();
+  if (!parsed.length) toast("No he trobat cap aliment al text");
+}
+
+// ——— Dictat per veu (reconeixement de veu del navegador, gratuït) ———
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voice = null;
+function setVoiceUI(state, msg) {
+  const b = $("#mic-btn"), st = $("#voice-status");
+  if (b) { b.classList.toggle("on", state === "listening"); b.innerHTML = state === "listening" ? ICON.stop : ICON.mic; b.setAttribute("aria-label", state === "listening" ? "Atura el dictat" : "Dicta amb la veu"); }
+  if (st) { st.hidden = !msg; st.textContent = msg || ""; st.classList.toggle("live", state === "listening"); }
+}
+function toggleVoice() { if (voice) voice.rec.stop(); else startVoice(); }
+function startVoice() {
+  if (!SpeechRec) {
+    toast("Aquest navegador no permet dictar aquí: fes servir el micròfon del teclat");
+    const ta = $("#meal-text"); if (ta) ta.focus();
+    return;
+  }
+  if (voice) return;
+  const ta = $("#meal-text");
+  const base = (UI.draft.text || "").trim();
+  const rec = new SpeechRec();
+  rec.lang = S.profile.voiceLang || "ca-ES";
+  rec.interimResults = true;
+  rec.continuous = false;
+  rec.maxAlternatives = 1;
+  voice = { rec, finalText: "", error: null };
+  rec.onresult = e => {
+    let fin = "", interim = "";
+    for (let i = 0; i < e.results.length; i++) {
+      const tr = e.results[i][0].transcript;
+      if (e.results[i].isFinal) fin += tr; else interim += tr;
+    }
+    voice.finalText = fin.trim();
+    const spoken = (fin + " " + interim).trim();
+    const t = $("#meal-text");
+    if (t) t.value = base ? `${base}, ${spoken}` : spoken;
+  };
+  rec.onerror = e => { if (voice) voice.error = e.error; };
+  rec.onend = () => {
+    const v = voice; voice = null;
+    if (!v) return;
+    if (v.error && v.error !== "no-speech" && v.error !== "aborted") {
+      const msgs = { "not-allowed": "Cal donar permís al micròfon (configuració del navegador)", "service-not-allowed": "El dictat no està disponible en aquest mode; fes servir el micròfon del teclat", network: "Cal connexió a internet per dictar", "audio-capture": "No s'ha trobat cap micròfon", "language-not-supported": "Idioma no disponible: prova l'altre a Perfil" };
+      setVoiceUI("idle", "");
+      toast(msgs[v.error] || "No s'ha pogut dictar");
+      const t = $("#meal-text"); if (t) t.value = UI.draft.text || "";
+      return;
+    }
+    if (!v.finalText) { setVoiceUI("idle", ""); toast("No t'he sentit. Torna-ho a provar"); const t = $("#meal-text"); if (t) t.value = UI.draft.text || ""; return; }
+    UI.draft.text = base ? `${base}, ${v.finalText}` : v.finalText;
+    const mt = detectMealType(v.finalText);
+    if (mt) { UI.draft.type = mt; const sel = $('[data-draft="type"]'); if (sel) sel.value = mt; }
+    saveDraft();
+    const t = $("#meal-text"); if (t) t.value = UI.draft.text;
+    setVoiceUI("idle", "");
+    parseDraftText();
+  };
+  try { rec.start(); }
+  catch (e) { voice = null; toast("No s'ha pogut iniciar el dictat"); return; }
+  if (ta) ta.value = base;
+  setVoiceUI("listening", "Escoltant… digues què has menjat");
+}
+
 function saveMeal() {
   const items = [];
   for (const l of UI.draft.lines) {
@@ -760,6 +840,8 @@ function viewProfile() {
 
   <section class="card"><h2>App i dades</h2>
     ${installBlock}
+    <label class="field"><span>Idioma del dictat per veu</span><div class="seg">
+      ${[["ca-ES", "Català"], ["es-ES", "Castellà"]].map(([k, l]) => `<button class="${(p.voiceLang || "ca-ES") === k ? "on" : ""}" data-action="set-p" data-field="voiceLang" data-v="${k}">${l}</button>`).join("")}</div></label>
     <label class="field"><span>Aparença</span><div class="seg">
       ${[["auto", "Automàtic"], ["light", "Clar"], ["dark", "Fosc"]].map(([k, l]) => `<button class="${(p.theme || "auto") === k ? "on" : ""}" data-action="set-p" data-field="theme" data-v="${k}">${l}</button>`).join("")}</div></label>
     <p class="small muted" style="margin:0 0 10px">Les dades es guarden només en aquest dispositiu. Per passar-les a un altre (p. ex. de mòbil a ordinador), exporta una còpia i importa-la a l'altre.</p>
@@ -867,17 +949,9 @@ document.addEventListener("click", e => {
       UI.date = todayKey();
       saveDraft(); setTab("meal"); toast("Revisa les quantitats i desa"); break;
     }
-    case "meal-parse": {
-      const text = UI.draft.text.trim();
-      if (!text) { toast("Escriu què has menjat"); break; }
-      const parsed = parseMealText(text, allFoods());
-      const keep = UI.draft.lines.filter(l => l.name.trim() && l.fromText !== true);
-      UI.draft.lines = [...keep, ...parsed.map(r => ({ id: uid(), name: r.name, grams: r.grams, foodId: r.food ? r.food.id : null, fromText: true }))];
-      saveDraft();
-      $("#lines").innerHTML = UI.draft.lines.map(lineHTML).join("");
-      refreshAllLines();
-      break;
-    }
+    case "meal-parse": parseDraftText(); break;
+    case "voice": toggleVoice(); break;
+    case "voice-quick": setTab("meal"); startVoice(); break;
     case "line-add": {
       const l = { id: uid(), name: "", grams: "", foodId: null };
       UI.draft.lines.push(l); saveDraft();

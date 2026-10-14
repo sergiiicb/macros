@@ -17,6 +17,10 @@ App web instal·lable (PWA). Gratuïta, sense comptes: totes les dades es guarde
 
 Un cop oberta la primera vegada funciona sense connexió. La lectura d'etiquetes baixa uns 10 MB el primer cop que s'utilitza i després també funciona sense connexió.
 
+## Dictat per veu
+
+A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que has menjat: *"per dinar dos-cents grams de pollastre, cinquanta de pebrot i cent cinquanta d'arròs"*. Detecta l'àpat, entén números dits amb paraules i ho calcula sol. L'idioma (català o castellà) es tria a Perfil. Fa servir el reconeixement de veu del navegador (gratuït; cal connexió). Si el navegador no el permet, el micròfon del teclat del mòbil fa el mateix.
+
 ## Passar les dades a l'ordinador
 
 Perfil → **Exporta còpia** (fitxer .json) → a l'altre dispositiu, Perfil → **Importa còpia**.

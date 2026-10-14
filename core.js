@@ -55,18 +55,73 @@ function searchFoods(query, foods, limit = 8) {
     .slice(0, limit);
 }
 
-// ——— Lectura del text lliure d'un menjar ———
-const UNIT_RE = "(kg|kgs|g|gr|grs|gram|grams|gramo|gramos|ml|cl|l|u|ud|uds|unitat|unitats|unidad|unidades|x|cullerada|cullerades|cucharada|cucharadas|scoop|scoops|llesca|llesques|rebanada|rebanadas)";
+// ——— Lectura del text lliure d'un menjar (escrit o dictat) ———
+const UNIT_WORDS = ["mililitres", "mililitros", "cucharadas", "cullerades", "unidades", "cucharada", "cullerada", "rebanadas", "llesques",
+  "rebanada", "unitats", "unidad", "unitat", "gramos", "quilos", "litres", "litros", "grams", "gramo", "kilos", "llesca", "scoops",
+  "quilo", "litre", "litro", "gram", "kilo", "scoop", "kgs", "grs", "uds", "kg", "gr", "ml", "cl", "ud", "g", "l", "u", "x"];
+const UNIT_RE = "(" + UNIT_WORDS.join("|") + ")";
 const QTY_FIRST = new RegExp("^\\s*(\\d+(?:[.,]\\d+)?)\\s*" + UNIT_RE + "?\\.?\\s+(.+)$", "i");
 const QTY_FIRST_TIGHT = new RegExp("^\\s*(\\d+(?:[.,]\\d+)?)\\s*" + UNIT_RE + "\\.?(.+)$", "i");
 const QTY_LAST = new RegExp("^(.+?)\\s+(\\d+(?:[.,]\\d+)?)\\s*" + UNIT_RE + "?\\.?\\s*$", "i");
+const AFTER_QTY_SPLIT = new RegExp("(?<=\\d\\s*(?:" + UNIT_WORDS.join("|") + ")?\\.?)\\s+(?:i|y|amb|con|mes|més)\\s+", "i");
+const QTY_ONLY = new RegExp("^\\s*(\\d+(?:[.,]\\d+)?)\\s*" + UNIT_RE + "?\\.?\\s*$", "i");
+
+// Números dits amb paraules ("dos-cents", "cent cinquanta", "un i mig", "doscientos")
+const NUM_WORDS = {
+  un: 1, una: 1, uno: 1, dos: 2, dues: 2, tres: 3, quatre: 4, cuatro: 4, cinc: 5, cinco: 5, sis: 6, seis: 6, set: 7, siete: 7,
+  vuit: 8, ocho: 8, nou: 9, nueve: 9, deu: 10, diez: 10, onze: 11, once: 11, dotze: 12, doce: 12, quinze: 15, quince: 15,
+  vint: 20, veinte: 20, trenta: 30, treinta: 30, quaranta: 40, cuarenta: 40, cinquanta: 50, cincuenta: 50,
+  seixanta: 60, sesenta: 60, setanta: 70, setenta: 70, vuitanta: 80, ochenta: 80, noranta: 90, noventa: 90,
+  cent: 100, cien: 100, ciento: 100, doscientos: 200, doscientas: 200, trescientos: 300, trescientas: 300,
+  cuatrocientos: 400, quinientos: 500, seiscientos: 600, mig: 0.5, mitja: 0.5, medio: 0.5, media: 0.5, cents: "x100", centes: "x100",
+};
+const NUM_ALT = Object.keys(NUM_WORDS).sort((a, b) => b.length - a.length).join("|");
+const NUM_RUN = new RegExp(`(?<![\\p{L}])(?:${NUM_ALT})(?:[\\s-]+(?:(?:i|y)[\\s-]+)?(?:${NUM_ALT}))*(?![\\p{L}])`, "giu");
+function wordsToNumbers(text) {
+  return (text || "").replace(NUM_RUN, run => {
+    const ws = run.toLowerCase().split(/[\s-]+/).filter(w => w !== "i" && w !== "y");
+    if (ws.length === 1 && NUM_WORDS[ws[0]] === "x100") return run;
+    let n = 0;
+    for (const w of ws) {
+      const v = NUM_WORDS[w];
+      if (v === "x100") n = (n || 1) * 100;
+      else if (v === 100 && n > 0 && n < 10) n *= 100;
+      else n += v;
+    }
+    return String(n);
+  });
+}
+
+// Treu frases d'introducció típiques del dictat ("he dinat", "per esmorzar"...)
+const INTRO_RE = /(?<![\p{L}])(?:avui|hoy|ara|ahora|he|hem|me\s+he)\s+(?:menjat|esmorzat|dinat|berenat|sopat|pres|begut|comido|desayunado|almorzado|cenado|merendado|tomado|bebido|comido)(?![\p{L}])|(?<![\p{L}])(?:per|para|de|al|a\s+l['’])\s*(?:esmorzar|dinar|berenar|sopar|desayunar|desayuno|comer|comida|almorzar|merendar|merienda|cenar|cena)(?![\p{L}])/giu;
+
+function detectMealType(text) {
+  const t = norm(text);
+  if (/\b(esmorz|desayun)/.test(t)) return "Esmorzar";
+  if (/\b(mig mati|almuerz|almorz)/.test(t)) return "Mig matí";
+  if (/\b(dinar|dinat|comida|comer)\b/.test(t)) return "Dinar";
+  if (/\b(berenar|berenat|merienda|merendar|merendado)\b/.test(t)) return "Berenar";
+  if (/\b(sopar|sopat|cena|cenar|cenado)\b/.test(t)) return "Sopar";
+  return null;
+}
 
 function splitMealText(text) {
-  return (text || "")
-    .split(/[,;\n+]+/)
-    .flatMap(ch => ch.split(/\s+(?:i|y|and|amb|con)\s+(?=\d)/i))
-    .map(s => s.trim())
-    .filter(Boolean);
+  const t = wordsToNumbers(text).replace(INTRO_RE, " ");
+  const pieces = t
+    .split(/[,;\n+.](?!\d)/)
+    .flatMap(ch => ch.split(/\s+(?:i|y|and|amb|con|mes|més|tambe|també|también)\s+(?=\d)/i))
+    .flatMap(ch => ch.split(AFTER_QTY_SPLIT))                // "pollastre 180 grams i arròs 100 grams"
+    .flatMap(ch => ch.split(/(?<=[\p{L})])\s+(?=\d)/u))   // "…pollastre 50 g de pebrot" (dictat sense comes)
+    .map(s => s.trim().replace(/^(?:i|y|amb|con)\s+/i, "").replace(/\s+(?:i|y|amb|con)$/i, ""))
+    .filter(s => s && /[\p{L}\d]/u.test(s));
+  // "pollastre" + "180 grams" → "pollastre 180 grams"
+  const out = [];
+  for (const p of pieces) {
+    const prev = out[out.length - 1];
+    if (prev && QTY_ONLY.test(p) && !/\d/.test(prev)) out[out.length - 1] = prev + " " + p;
+    else out.push(p);
+  }
+  return out;
 }
 
 function parseChunk(chunk) {
@@ -74,7 +129,7 @@ function parseChunk(chunk) {
   if (m) { qty = m[1]; unit = m[2]; name = m[3]; }
   else if ((m = chunk.match(QTY_LAST))) { name = m[1]; qty = m[2]; unit = m[3]; }
   else { name = chunk; qty = null; unit = null; }
-  name = name.replace(/^\s*(de|del|d['’`´]?)\s*/i, "").replace(/^e\s+/i, "").trim();
+  name = name.replace(/^\s*(de|del|d['’`´]?)\s*/i, "").replace(/^e\s+/i, "").replace(/[.!?]+$/, "").trim();
   return { name, qty: qty == null ? null : parseFloat(String(qty).replace(",", ".")), unit: unit ? unit.toLowerCase() : null };
 }
 
@@ -82,10 +137,10 @@ function parseChunk(chunk) {
 function toGrams(qty, unit, food) {
   if (qty == null) return food && food.unitG ? food.unitG : 100;
   const u = unit || "";
-  if (/^(kg|kgs)$/.test(u)) return qty * 1000;
-  if (/^l$/.test(u)) return qty * 1000;
+  if (/^(kg|kgs|quilo|quilos|kilo|kilos)$/.test(u)) return qty * 1000;
+  if (/^(l|litre|litres|litro|litros)$/.test(u)) return qty * 1000;
   if (/^cl$/.test(u)) return qty * 10;
-  if (/^(g|gr|grs|gram|grams|gramo|gramos|ml)$/.test(u)) return qty;
+  if (/^(g|gr|grs|gram|grams|gramo|gramos|ml|mililitres|mililitros)$/.test(u)) return qty;
   if (/^(cullerad|cucharad)/.test(u)) return qty * 10;
   if (/^scoop/.test(u)) return qty * 30;
   if (/^(llesc|rebanad)/.test(u)) return qty * (food && food.unitG ? food.unitG : 30);
@@ -256,5 +311,5 @@ function parseLabelText(text) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { norm, tokens, searchFoods, parseMealText, parseChunk, splitMealText, toGrams, macrosFor, computeTargets, dayTarget, parseLabelText, GOALS, INTENSITY, NEAT };
+  module.exports = { wordsToNumbers, detectMealType, norm, tokens, searchFoods, parseMealText, parseChunk, splitMealText, toGrams, macrosFor, computeTargets, dayTarget, parseLabelText, GOALS, INTENSITY, NEAT };
 }

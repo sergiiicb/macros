@@ -289,3 +289,16 @@ table.data th:first-child, table.data td:first-child { text-align: left; }
 @media (min-width: 720px) {
   .top { padding-top: 18px; }
 }
+
+/* ——— dictat per veu ——— */
+.voice-wrap { position: relative; }
+.voice-wrap textarea { padding-right: 62px; min-height: 96px; }
+.mic-btn {
+  position: absolute; right: 8px; bottom: 8px; width: 46px; height: 46px; border-radius: 50%; border: 0;
+  background: var(--accent); color: var(--accent-ink); display: grid; place-items: center;
+}
+.mic-btn svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.mic-btn.on { background: var(--danger); color: #fff; animation: pulse 1.4s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--danger) 55%, transparent); } 100% { box-shadow: 0 0 0 16px transparent; } }
+.voice-status { font-size: 13px; color: var(--muted); margin: -4px 2px 12px; }
+.voice-status.live { color: var(--danger); font-weight: 600; }
