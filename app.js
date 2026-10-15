@@ -19,6 +19,7 @@ const ICON = {
   camera: '<svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>',
   image: '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M20 16l-5-5-8 8"/></svg>',
   calc: '<svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg>',
+  flash: '<svg viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg>',
   mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
 };
@@ -39,17 +40,62 @@ const DEFAULT = {
   foods: [], days: {}, weights: [],
 };
 const clone = o => JSON.parse(JSON.stringify(o));
-function load() {
-  try {
-    const d = JSON.parse(localStorage.getItem(KEY));
-    if (d) return { ...clone(DEFAULT), ...d, profile: { ...DEFAULT.profile, ...(d.profile || {}) } };
-  } catch (e) {}
-  return clone(DEFAULT);
+const normalize = d => ({ ...clone(DEFAULT), ...(d || {}), profile: { ...DEFAULT.profile, ...((d && d.profile) || {}) } });
+function loadLS() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch (e) { return null; }
 }
-let S = load();
+let S = normalize(loadLS());
+const STORE = { lsOK: true, idbOK: null, persisted: null, lastSave: S.savedAt || null, booted: false };
+
+// Còpia de les dades a IndexedDB (segona còpia, per si el navegador esborra l'altra)
+const KV = {
+  _db: null,
+  open() {
+    if (this._db) return Promise.resolve(this._db);
+    return new Promise((res, rej) => {
+      const rq = indexedDB.open("macros-data", 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore("kv");
+      rq.onsuccess = () => res(this._db = rq.result);
+      rq.onerror = () => rej(rq.error);
+    });
+  },
+  async put(k, v) {
+    const db = await this.open();
+    return new Promise((res, rej) => { const t = db.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); });
+  },
+  async get(k) {
+    const db = await this.open();
+    return new Promise((res, rej) => { const rq = db.transaction("kv").objectStore("kv").get(k); rq.onsuccess = () => res(rq.result); rq.onerror = () => rej(rq.error); });
+  },
+};
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); }
-  catch (e) { toast("No s'ha pogut desar: memòria del navegador plena"); }
+  S.savedAt = Date.now();
+  const json = JSON.stringify(S);
+  try { localStorage.setItem(KEY, json); STORE.lsOK = true; } catch (e) { STORE.lsOK = false; }
+  KV.put("state", json).then(() => { STORE.idbOK = true; }, () => {
+    STORE.idbOK = false;
+    if (!STORE.lsOK) toast("No s'ha pogut desar: el navegador no deixa guardar dades");
+  });
+  STORE.lastSave = S.savedAt;
+  requestPersist();
+}
+async function restoreFromIDB() {
+  let json = null;
+  try { json = await KV.get("state"); STORE.idbOK = true; } catch (e) { STORE.idbOK = false; return; }
+  const ls = loadLS();
+  if (!json) { if (ls) KV.put("state", JSON.stringify(S)).catch(() => {}); return; }
+  let d; try { d = JSON.parse(json); } catch (e) { return; }
+  if (!ls || (d.savedAt || 0) > (ls.savedAt || 0)) {
+    S = normalize(d); STORE.lastSave = S.savedAt || null;
+    try { localStorage.setItem(KEY, json); } catch (e) {}
+    if (STORE.booted) { applyTheme(); render(); }
+  }
+}
+// Demana al navegador que no esborri mai les dades d'aquesta app
+async function requestPersist() {
+  if (STORE.persisted || requestPersist._asked || !(navigator.storage && navigator.storage.persist)) return;
+  requestPersist._asked = true;
+  try { STORE.persisted = (await navigator.storage.persisted()) || (await navigator.storage.persist()); } catch (e) {}
 }
 
 // Imatges de les etiquetes (IndexedDB)
@@ -179,6 +225,7 @@ function renderHeader() {
 function viewToday() {
   const d = getDay(UI.date), tot = dayTotals(d), tg = targetFor(UI.date), t = targets();
   let html = "";
+  html += storageBanner();
   if (!t) html += `<div class="banner info"><span>Omple el perfil per calcular el teu objectiu diari.</span><button class="btn sm primary" data-action="goto" data-tab="profile">Perfil</button></div>`;
 
   const goal = tg ? tg.kcal : 0;
@@ -250,6 +297,13 @@ function viewToday() {
   }
   html += `</section>`;
   return html;
+}
+const inAppBrowser = () => /\bwv\b|WhatsApp|Instagram|FBAN|FBAV|FB_IAB|Telegram|Line\/|MicroMessenger|GSA\//i.test(navigator.userAgent);
+function storageBanner() {
+  if (isStandalone()) return "";
+  if (inAppBrowser()) return `<div class="banner warn"><span><b>Estàs dins el navegador d'una altra app</b> (WhatsApp, Instagram…). Aquí les dades s'esborren. Obre l'enllaç amb Chrome o Safari i instal·la l'app.</span></div>`;
+  if (STORE.persisted === false || STORE.persisted === null) return `<div class="banner warn"><span>Fas servir l'app des d'una pestanya del navegador i les dades es poden esborrar. <b>Instal·la-la</b> a la pantalla d'inici.</span><button class="btn sm" data-action="goto" data-tab="profile">Com?</button></div>`;
+  return "";
 }
 function macroRow(label, cls, val, goal) {
   const p = goal ? clamp(val / goal, 0, 1) : 0;
@@ -507,8 +561,9 @@ function openFoodEditor(food, { copy = false } = {}) {
       <img id="ed-img" hidden alt="Etiqueta">
       <div class="small muted" id="ed-photo-hint" style="margin-bottom:10px">Fes una foto de la taula nutricional: els valors s'ompliran sols i podràs corregir-los.</div>
       <div class="row">
-        <label class="btn primary">${ICON.camera}Foto<input type="file" accept="image/*" capture="environment" data-action="ed-file" hidden></label>
-        <label class="btn">${ICON.image}Galeria<input type="file" accept="image/*" data-action="ed-file" hidden></label>
+        <button type="button" class="btn primary" data-action="cam-open">${ICON.camera}Càmera</button>
+        <label class="btn" data-action="ed-pick">${ICON.image}Galeria<input type="file" accept="image/*" data-action="ed-file" hidden></label>
+        <input type="file" accept="image/*" capture="environment" data-action="ed-file" id="ed-capture" hidden>
       </div>
       <div class="ocr-status" id="ocr-status" hidden></div>
       <div class="progress" id="ocr-prog" hidden><div></div></div>
@@ -537,6 +592,8 @@ function openFoodEditor(food, { copy = false } = {}) {
   $$("#ed-kcal,#ed-p,#ed-c,#ed-f").forEach(i => i.addEventListener("input", checkEditorKcal));
 }
 function closeSheet() {
+  closeCamera();
+  clearEditorDraft();
   const sh = $("#sheet");
   sh.hidden = true; sh.innerHTML = "";
   document.body.style.overflow = "";
@@ -577,9 +634,10 @@ async function editorSave() {
     food = { id: "u" + uid(), name, kcal, p, c, f, unitG: unitG || null, aliases, generic: false, created: todayKey() };
     S.foods.push(food);
   }
-  if (editor.blob) await IDB.put(food.id, editor.blob);
   save();
+  const blob = editor.blob;
   closeSheet();
+  if (blob) await IDB.put(food.id, blob);
   UI.foodsSeg = "mine";
   toast(`Desat: ${name}`);
   if (UI.tab === "foods") render();
@@ -591,6 +649,97 @@ async function editorDelete() {
   await IDB.del(editor.id);
   save(); closeSheet(); render();
   toast("Aliment eliminat");
+}
+
+// ——— Esborrany de l'editor (si el mòbil reinicia l'app en obrir la càmera o la galeria) ———
+const ED_KEY = "macros.editor";
+function saveEditorDraft() {
+  if (!editor) return;
+  const g = id => { const e = $(id); return e ? e.value : ""; };
+  try {
+    localStorage.setItem(ED_KEY, JSON.stringify({ t: Date.now(), id: editor.id, pendingPhoto: !!editor.pendingPhoto,
+      name: g("#ed-name"), kcal: g("#ed-kcal"), p: g("#ed-p"), c: g("#ed-c"), f: g("#ed-f"), unit: g("#ed-unit"), alias: g("#ed-alias") }));
+  } catch (e) {}
+}
+function clearEditorDraft() { try { localStorage.removeItem(ED_KEY); } catch (e) {} }
+function recoverEditor() {
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(ED_KEY)); } catch (e) {}
+  if (!d || Date.now() - d.t > 30 * 60 * 1000) { clearEditorDraft(); return; }
+  setTab("foods");
+  openFoodEditor(d.id ? S.foods.find(f => f.id === d.id) || null : null);
+  if (d.id && !editor.id) editor.id = null;
+  const set = (id, v) => { const e = $(id); if (e && v != null) e.value = v; };
+  set("#ed-name", d.name); set("#ed-kcal", d.kcal); set("#ed-p", d.p); set("#ed-c", d.c); set("#ed-f", d.f); set("#ed-unit", d.unit); set("#ed-alias", d.alias);
+  checkEditorKcal();
+  saveEditorDraft();
+  if (d.pendingPhoto) {
+    const st = $("#ocr-status");
+    st.hidden = false;
+    st.innerHTML = `<b style="color:var(--warn)">El mòbil ha reiniciat l'app mentre feies la foto.</b> Torna-ho a provar amb el botó <b>Càmera</b>: fa la foto dins l'app i no passa.`;
+  }
+}
+
+// ——— Càmera integrada (la foto es fa dins l'app; el mòbil no la tanca) ———
+let cam = null;
+async function openCamera() {
+  if (!editor) return;
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) { fallbackCapture(); return; }
+  const ov = document.createElement("div");
+  ov.className = "cam"; ov.id = "cam";
+  ov.innerHTML = `<video playsinline autoplay muted></video><div class="cam-frame"></div>
+    <div class="cam-top"><button class="icon-btn" data-action="cam-close" aria-label="Tanca la càmera">${ICON.close}</button>
+      <span>Enquadra la taula nutricional</span>
+      <button class="icon-btn cam-torch" data-action="cam-torch" aria-label="Llanterna" style="visibility:hidden">${ICON.flash}</button></div>
+    <div class="cam-bottom"><button class="cam-shot" data-action="cam-shot" aria-label="Fes la foto"></button></div>`;
+  document.body.appendChild(ov);
+  cam = { ov, stream: null, torch: false };
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    if (!cam || cam.ov !== ov) { stream.getTracks().forEach(t => t.stop()); return; }
+    cam.stream = stream;
+    const v = $("video", ov);
+    v.srcObject = stream;
+    await v.play().catch(() => {});
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.torch) $(".cam-torch", ov).style.visibility = "visible";
+    if (caps.focusMode && caps.focusMode.includes("continuous")) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
+  } catch (e) {
+    closeCamera();
+    if (e && e.name === "NotAllowedError") toast("Cal donar permís a la càmera: toca el cadenat de la barra d'adreces o la configuració de l'app");
+    else fallbackCapture();
+  }
+}
+function closeCamera() {
+  if (!cam) return;
+  if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
+  cam.ov.remove();
+  cam = null;
+}
+async function cameraShot() {
+  if (!cam || !cam.stream) return;
+  const v = $("video", cam.ov);
+  if (!v.videoWidth) return;
+  const cv = document.createElement("canvas");
+  cv.width = v.videoWidth; cv.height = v.videoHeight;
+  cv.getContext("2d").drawImage(v, 0, 0);
+  const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
+  closeCamera();
+  if (blob) handleEditorFile(blob);
+}
+async function toggleTorch() {
+  if (!cam || !cam.stream) return;
+  cam.torch = !cam.torch;
+  try { await cam.stream.getVideoTracks()[0].applyConstraints({ advanced: [{ torch: cam.torch }] }); } catch (e) {}
+  $(".cam-torch", cam.ov).classList.toggle("on", cam.torch);
+}
+// Si el navegador no té càmera integrada: càmera del sistema (guardant abans el que s'ha escrit)
+function fallbackCapture() {
+  if (!editor) return;
+  editor.pendingPhoto = true;
+  saveEditorDraft();
+  $("#ed-capture").click();
 }
 
 // ——— OCR (Tesseract.js, gratuït i al dispositiu) ———
@@ -640,6 +789,8 @@ function prepForOCR(img) {
 }
 async function handleEditorFile(file) {
   if (!file || !editor) return;
+  editor.pendingPhoto = false;
+  saveEditorDraft();
   const status = $("#ocr-status"), prog = $("#ocr-prog"), bar = $("#ocr-prog > div");
   let img, url;
   try { ({ img, url } = await decodeImage(file)); }
@@ -840,6 +991,13 @@ function viewProfile() {
 
   <section class="card"><h2>App i dades</h2>
     ${installBlock}
+    <div style="margin-bottom:12px">
+      <div class="kv"><span>Obert com</span><b>${isStandalone() ? "App instal·lada" : inAppBrowser() ? "Navegador d'una altra app ⚠" : "Pestanya del navegador"}</b></div>
+      <div class="kv"><span>Dades protegides contra esborrat</span><b>${STORE.persisted ? "Sí" : STORE.persisted === false ? "No" : "Desconegut"}</b></div>
+      <div class="kv"><span>Còpies internes</span><b>${[STORE.lsOK ? "principal ✓" : "principal ✗", STORE.idbOK ? "reserva ✓" : STORE.idbOK === false ? "reserva ✗" : "reserva…"].join(" · ")}</b></div>
+      <div class="kv"><span>Últim desat</span><b class="num">${STORE.lastSave ? new Intl.DateTimeFormat("ca-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(STORE.lastSave)) : "—"}</b></div>
+      <div class="kv"><span>Guardat</span><b class="num">${Object.keys(S.days).length} dies · ${S.foods.length} aliments</b></div>
+    </div>
     <label class="field"><span>Idioma del dictat per veu</span><div class="seg">
       ${[["ca-ES", "Català"], ["es-ES", "Castellà"]].map(([k, l]) => `<button class="${(p.voiceLang || "ca-ES") === k ? "on" : ""}" data-action="set-p" data-field="voiceLang" data-v="${k}">${l}</button>`).join("")}</div></label>
     <label class="field"><span>Aparença</span><div class="seg">
@@ -987,6 +1145,11 @@ document.addEventListener("click", e => {
     case "food-copy": openFoodEditor(foodById(a.dataset.id), { copy: true }); break;
     case "sheet-close": closeSheet(); break;
     case "ed-save": editorSave(); break;
+    case "ed-pick": if (editor) { editor.pendingPhoto = true; saveEditorDraft(); } break;
+    case "cam-open": openCamera(); break;
+    case "cam-close": closeCamera(); break;
+    case "cam-shot": cameraShot(); break;
+    case "cam-torch": toggleTorch(); break;
     case "ed-del": editorDelete(); break;
     case "stats-range": UI.statsRange = +a.dataset.v; render(); break;
     case "set-p": S.profile[a.dataset.field] = a.dataset.v; save(); if (a.dataset.field === "theme") applyTheme(); render(); break;
@@ -1012,6 +1175,7 @@ document.addEventListener("click", e => {
 
 document.addEventListener("input", e => {
   const el = e.target;
+  if (editor && el.closest && el.closest("#sheet")) saveEditorDraft();
   if (el.dataset.p) {
     S.profile[el.dataset.p] = el.value; save();
     const box = $("#profile-result"); if (box) box.innerHTML = profileResult();
@@ -1064,14 +1228,25 @@ document.addEventListener("pointerdown", e => {
 });
 document.addEventListener("pointerout", e => { const c = e.target.closest(".chart"); if (c && e.pointerType === "mouse" && !c.contains(e.relatedTarget)) $(".tip", c).hidden = true; });
 
-document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#sheet").hidden) closeSheet(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (cam) closeCamera(); else if (!$("#sheet").hidden) closeSheet();
+});
 
 // Si l'app queda oberta i canvia el dia, torna a avui
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") closeCamera();
   if (document.visibilityState === "visible" && UI.tab === "today" && UI._lastToday && UI._lastToday !== todayKey() && UI.date === UI._lastToday) { UI.date = todayKey(); render(); }
   UI._lastToday = todayKey();
 });
 UI._lastToday = todayKey();
 
-applyTheme();
-render();
+(async function boot() {
+  await Promise.race([restoreFromIDB(), new Promise(r => setTimeout(r, 1500))]);
+  try { if (navigator.storage && navigator.storage.persisted) STORE.persisted = await navigator.storage.persisted(); } catch (e) {}
+  if (!STORE.persisted && (S.foods.length || Object.keys(S.days).length || S.profile.weight)) requestPersist();
+  STORE.booted = true;
+  applyTheme();
+  render();
+  recoverEditor();
+})();

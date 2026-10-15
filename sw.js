@@ -1,5 +1,5 @@
 // Service worker: l'app funciona sense connexió un cop oberta per primer cop.
-const VERSION = "macros-v2";
+const VERSION = "macros-v3";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 

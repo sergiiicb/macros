@@ -21,6 +21,12 @@ Un cop oberta la primera vegada funciona sense connexió. La lectura d'etiquetes
 
 A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que has menjat: *"per dinar dos-cents grams de pollastre, cinquanta de pebrot i cent cinquanta d'arròs"*. Detecta l'àpat, entén números dits amb paraules i ho calcula sol. L'idioma (català o castellà) es tria a Perfil. Fa servir el reconeixement de veu del navegador (gratuït; cal connexió). Si el navegador no el permet, el micròfon del teclat del mòbil fa el mateix.
 
+## Si les dades desapareixen
+
+- Obre sempre l'app des de la **icona instal·lada**, no des de l'enllaç de WhatsApp ni d'una pestanya: els navegadors integrats d'altres apps esborren les dades.
+- A **Perfil → App i dades** hi ha l'estat: com està oberta, si les dades estan protegides i quan s'han desat per últim cop.
+- Exporta una còpia de tant en tant.
+
 ## Passar les dades a l'ordinador
 
 Perfil → **Exporta còpia** (fitxer .json) → a l'altre dispositiu, Perfil → **Importa còpia**.
