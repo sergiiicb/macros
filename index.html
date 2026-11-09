@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Macros</title>
-<meta name="description" content="Recompte de kcal, macros i aigua">
+<title>Rècord</title>
+<meta name="description" content="Recompte de kcal, macros i aigua, i registre d'entrenaments">
 <meta name="theme-color" content="#f6f7f4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0f1211" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Macros">
+<meta name="apple-mobile-web-app-title" content="Rècord">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -30,8 +30,11 @@
   <button data-tab="foods" aria-label="Aliments">
     <svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>Aliments</span>
   </button>
+  <button data-tab="gym" aria-label="Gimnàs">
+    <svg viewBox="0 0 24 24"><path d="M6.5 7v10M3.5 9.5v5M17.5 7v10M20.5 9.5v5M6.5 12h11"/></svg><span>Gimnàs</span>
+  </button>
   <button data-tab="stats" aria-label="Estadístiques">
-    <svg viewBox="0 0 24 24"><path d="M5 20V12M10 20V5M15 20v-9M20 20V8"/></svg><span>Estadístiques</span>
+    <svg viewBox="0 0 24 24"><path d="M5 20V12M10 20V5M15 20v-9M20 20V8"/></svg><span>Gràfics</span>
   </button>
   <button data-tab="profile" aria-label="Perfil">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c1.2-3.6 4-5.5 7.5-5.5s6.3 1.9 7.5 5.5"/></svg><span>Perfil</span>
@@ -41,8 +44,12 @@
 <div class="sheet-wrap" id="sheet" hidden></div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+<script src="firebase-config.js"></script>
 <script src="foods.js"></script>
 <script src="core.js"></script>
+<script src="gym-db.js"></script>
+<script src="gym.js"></script>
+<script src="sync.js"></script>
 <script src="app.js"></script>
 <script>
   if ("serviceWorker" in navigator && location.protocol !== "file:") {

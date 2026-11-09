@@ -1,7 +1,7 @@
 {
-  "name": "Macros — kcal, macros i aigua",
-  "short_name": "Macros",
-  "description": "Recompte diari de kcal, macros i aigua",
+  "name": "Rècord — dieta i gimnàs",
+  "short_name": "Rècord",
+  "description": "Kcal, macros, aigua i registre d'entrenaments",
   "lang": "ca",
   "start_url": "./",
   "scope": "./",

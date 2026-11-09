@@ -1,5 +1,5 @@
 "use strict";
-/* Macros — app de recompte de kcal, macros i aigua. Tot es guarda al dispositiu. */
+/* Rècord — kcal, macros, aigua i gimnàs. Es guarda al dispositiu i, amb compte, també al núvol. */
 
 // ——————————————————— utilitats ———————————————————
 const $ = (s, el = document) => el.querySelector(s);
@@ -21,6 +21,8 @@ const ICON = {
   calc: '<svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg>',
   flash: '<svg viewBox="0 0 24 24"><path d="M13 3L5 13.5h6L10 21l8-10.5h-6z"/></svg>',
   mic: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>',
+  dots: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg>',
+  info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>',
   stop: '<svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></svg>',
 };
 
@@ -38,9 +40,11 @@ const DRAFT_KEY = "macros.draft";
 const DEFAULT = {
   profile: { name: "", sex: "m", age: "", height: "", weight: "", bodyFat: "", neat: "light", sessions: 4, hours: 1.5, intensity: "mod", goal: "maint", manualAdj: 0, theme: "auto", voiceLang: "ca-ES" },
   foods: [], days: {}, weights: [],
+  gym: { templates: [], sessions: [], active: null, custom: [], alias: {}, rest: 120 },
 };
 const clone = o => JSON.parse(JSON.stringify(o));
-const normalize = d => ({ ...clone(DEFAULT), ...(d || {}), profile: { ...DEFAULT.profile, ...((d && d.profile) || {}) } });
+const normalize = d => ({ ...clone(DEFAULT), ...(d || {}), profile: { ...DEFAULT.profile, ...((d && d.profile) || {}) },
+  gym: { ...clone(DEFAULT.gym), ...((d && d.gym) || {}) } });
 function loadLS() {
   try { return JSON.parse(localStorage.getItem(KEY)) || null; } catch (e) { return null; }
 }
@@ -69,6 +73,10 @@ const KV = {
   },
 };
 function save() {
+  saveLocalOnly();
+  if (typeof syncSchedule === "function") syncSchedule();
+}
+function saveLocalOnly() {
   S.savedAt = Date.now();
   const json = JSON.stringify(S);
   try { localStorage.setItem(KEY, json); STORE.lsOK = true; } catch (e) { STORE.lsOK = false; }
@@ -197,12 +205,14 @@ function setTab(tab) {
 }
 function render() {
   renderHeader();
+  $("#tabbar [data-tab=gym]").classList.toggle("live", !!S.gym.active);
   const v = $("#view");
   if (UI.tab === "today") v.innerHTML = viewToday();
   else if (UI.tab === "meal") { v.innerHTML = viewMeal(); refreshAllLines(); }
   else if (UI.tab === "foods") { v.innerHTML = viewFoods(); loadThumbs(); }
   else if (UI.tab === "stats") v.innerHTML = viewStats();
   else if (UI.tab === "profile") v.innerHTML = viewProfile();
+  else if (UI.tab === "gym") { v.innerHTML = viewGym(); afterGymRender(); }
 }
 function renderHeader() {
   const h = $("#top");
@@ -214,6 +224,8 @@ function renderHeader() {
       <div class="label" data-action="day-today" role="button">${esc(fmtLong(UI.date))}<small>${sub}</small></div>
       <button class="icon-btn" data-action="day-next" aria-label="Dia següent" ${isToday ? "disabled" : ""}>${ICON.right}</button>
     </div></div>`;
+  } else if (UI.tab === "gym") {
+    h.innerHTML = gymHeader();
   } else {
     const titles = { foods: "Aliments", stats: "Estadístiques", profile: "Perfil" };
     const extra = UI.tab === "foods" ? `<button class="btn primary sm" data-action="food-new">${ICON.plus}Nou aliment</button>` : "";
@@ -226,6 +238,7 @@ function viewToday() {
   const d = getDay(UI.date), tot = dayTotals(d), tg = targetFor(UI.date), t = targets();
   let html = "";
   html += storageBanner();
+  if (S.gym.active) html += `<div class="banner info"><span>Tens una sessió de gimnàs en curs: <b>${esc(S.gym.active.name)}</b></span><button class="btn sm primary" data-g="goto-session">Continua</button></div>`;
   if (!t) html += `<div class="banner info"><span>Omple el perfil per calcular el teu objectiu diari.</span><button class="btn sm primary" data-action="goto" data-tab="profile">Perfil</button></div>`;
 
   const goal = tg ? tg.kcal : 0;
@@ -277,6 +290,10 @@ function viewToday() {
       <button class="btn" data-action="water-custom">Altre</button>
     </div>
   </section>`;
+
+  // Entrenament del dia
+  const gs = S.gym.sessions.filter(s => s.date === UI.date);
+  if (gs.length) html += `<section class="card"><h2>Entrenament</h2>${gs.map(sessionRow).join("")}</section>`;
 
   // Menjars
   const meals = [...(d.meals || [])].sort((a, b) => (a.time || "").localeCompare(b.time || ""));
@@ -600,6 +617,7 @@ function closeSheet() {
   if (editor && editor.previewURL) URL.revokeObjectURL(editor.previewURL);
   editor = null;
   ocrLogger = null;
+  gymSheetClosed();
 }
 function showEditorImg(url) {
   const img = $("#ed-img");
@@ -986,8 +1004,10 @@ function viewProfile() {
   <section class="card"><h2>Registre de pes</h2>
     <div class="row" style="margin-bottom:10px"><div class="unit-input grow"><input class="input num" type="number" inputmode="decimal" step="0.1" id="w-new" placeholder="${esc(p.weight || "Pes d'avui")}"><em>kg</em></div>
       <button class="btn primary" data-action="w-add">Registra</button></div>
-    ${lastW.length ? lastW.slice(0, 6).map(w => `<div class="kv"><span>${esc(fmtLong(w.d))}</span><b class="num">${fmt1(w.kg)} kg <button class="link-btn del" data-action="w-del" data-d="${w.d}" aria-label="Elimina">×</button></b></div>`).join("") : `<p class="small faint" style="margin:0">Registrar el pes actualitza el càlcul i en veuràs l'evolució a Estadístiques.</p>`}
+    ${lastW.length ? lastW.slice(0, 6).map(w => `<div class="kv"><span>${esc(fmtLong(w.d))}</span><b class="num">${fmt1(w.kg)} kg <button class="link-btn del" data-action="w-del" data-d="${w.d}" aria-label="Elimina">×</button></b></div>`).join("") : `<p class="small faint" style="margin:0">Registrar el pes actualitza el càlcul i en veuràs l'evolució a Gràfics.</p>`}
   </section>
+
+  <section class="card"><h2>Compte i sincronització</h2>${syncProfileHTML()}</section>
 
   <section class="card"><h2>App i dades</h2>
     ${installBlock}
@@ -996,13 +1016,13 @@ function viewProfile() {
       <div class="kv"><span>Dades protegides contra esborrat</span><b>${STORE.persisted ? "Sí" : STORE.persisted === false ? "No" : "Desconegut"}</b></div>
       <div class="kv"><span>Còpies internes</span><b>${[STORE.lsOK ? "principal ✓" : "principal ✗", STORE.idbOK ? "reserva ✓" : STORE.idbOK === false ? "reserva ✗" : "reserva…"].join(" · ")}</b></div>
       <div class="kv"><span>Últim desat</span><b class="num">${STORE.lastSave ? new Intl.DateTimeFormat("ca-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(STORE.lastSave)) : "—"}</b></div>
-      <div class="kv"><span>Guardat</span><b class="num">${Object.keys(S.days).length} dies · ${S.foods.length} aliments</b></div>
+      <div class="kv"><span>Guardat</span><b class="num">${Object.keys(S.days).length} dies · ${S.foods.length} aliments · ${S.gym.sessions.length} sessions</b></div>
     </div>
     <label class="field"><span>Idioma del dictat per veu</span><div class="seg">
       ${[["ca-ES", "Català"], ["es-ES", "Castellà"]].map(([k, l]) => `<button class="${(p.voiceLang || "ca-ES") === k ? "on" : ""}" data-action="set-p" data-field="voiceLang" data-v="${k}">${l}</button>`).join("")}</div></label>
     <label class="field"><span>Aparença</span><div class="seg">
       ${[["auto", "Automàtic"], ["light", "Clar"], ["dark", "Fosc"]].map(([k, l]) => `<button class="${(p.theme || "auto") === k ? "on" : ""}" data-action="set-p" data-field="theme" data-v="${k}">${l}</button>`).join("")}</div></label>
-    <p class="small muted" style="margin:0 0 10px">Les dades es guarden només en aquest dispositiu. Per passar-les a un altre (p. ex. de mòbil a ordinador), exporta una còpia i importa-la a l'altre.</p>
+    <p class="small muted" style="margin:0 0 10px">Còpia de seguretat manual (fitxer amb totes les dades, inclosos els entrenaments):</p>
     <div class="grid2">
       <button class="btn" data-action="export">Exporta còpia</button>
       <label class="btn">Importa còpia<input type="file" accept="application/json,.json" data-action="import" hidden></label>
@@ -1044,7 +1064,7 @@ function exportData() {
     const blob = new Blob([JSON.stringify({ app: "macros", v: 1, exported: new Date().toISOString(), data: S, images })], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `macros-copia-${todayKey()}.json`;
+    a.download = `record-copia-${todayKey()}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     toast("Còpia exportada");
@@ -1055,7 +1075,7 @@ async function importData(file) {
     const j = JSON.parse(await file.text());
     if (j.app !== "macros" || !j.data) throw new Error("format");
     if (!confirm("Importar la còpia? Substituirà totes les dades d'aquest dispositiu.")) return;
-    S = { ...clone(DEFAULT), ...j.data, profile: { ...DEFAULT.profile, ...(j.data.profile || {}) } };
+    S = normalize(j.data);
     for (const [k, url] of Object.entries(j.images || {})) await IDB.put(k, await (await fetch(url)).blob());
     save(); applyTheme(); render();
     toast("Dades importades");
@@ -1067,6 +1087,7 @@ document.addEventListener("click", e => {
   const tabBtn = e.target.closest("#tabbar button");
   if (tabBtn) { setTab(tabBtn.dataset.tab); return; }
   if (e.target.id === "sheet") { closeSheet(); return; }
+  if (gymClick(e)) return;
   const a = e.target.closest("[data-action]");
   if (!a) return;
   const act = a.dataset.action;
@@ -1164,7 +1185,7 @@ document.addEventListener("click", e => {
     case "install": if (installPrompt) { installPrompt.prompt(); installPrompt.userChoice.finally(() => { installPrompt = null; render(); }); } break;
     case "export": exportData(); break;
     case "wipe":
-      if (confirm("Segur que vols esborrar TOTES les dades (perfil, aliments, menjars)? No es pot desfer.")) {
+      if (confirm(`Segur que vols esborrar TOTES les dades (perfil, aliments, menjars, entrenaments)?${SYNC.state === "in" ? " També s'esborraran del núvol." : ""} No es pot desfer.`)) {
         S = clone(DEFAULT); save(); resetDraft();
         IDB.keys().then(ks => ks.forEach(k => IDB.del(k)));
         applyTheme(); render(); toast("Dades esborrades");
@@ -1175,6 +1196,7 @@ document.addEventListener("click", e => {
 
 document.addEventListener("input", e => {
   const el = e.target;
+  if (gymInput(e)) return;
   if (editor && el.closest && el.closest("#sheet")) saveEditorDraft();
   if (el.dataset.p) {
     S.profile[el.dataset.p] = el.value; save();
@@ -1204,6 +1226,7 @@ document.addEventListener("input", e => {
 
 document.addEventListener("change", e => {
   const el = e.target;
+  if (gymChange(e)) return;
   const act = el.dataset.action;
   if (act === "day-type") { ensureDay(UI.date).type = el.value; save(); render(); }
   else if (act === "ed-file") { handleEditorFile(el.files[0]); el.value = ""; }
@@ -1246,7 +1269,10 @@ UI._lastToday = todayKey();
   try { if (navigator.storage && navigator.storage.persisted) STORE.persisted = await navigator.storage.persisted(); } catch (e) {}
   if (!STORE.persisted && (S.foods.length || Object.keys(S.days).length || S.profile.weight)) requestPersist();
   STORE.booted = true;
+  if (S.gym.active) { UI.tab = "gym"; $$("#tabbar button").forEach(b => b.classList.toggle("active", b.dataset.tab === "gym")); }
   applyTheme();
   render();
   recoverEditor();
+  syncWakeLock();
+  syncInit();
 })();
