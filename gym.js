@@ -17,10 +17,10 @@ const G = () => S.gym;
 function exById(id) {
   return G().custom.find(c => c.id === id) || GYM_DB_MAP.get(id) || { id, en: id, ca: "Exercici desconegut", alias: "", pm: [], sm: [], eq: "other", cat: "strength", imgs: 0, kind: "wr" };
 }
-const exName = id => { const e = exById(id); return G().alias[id] || e.name || e.ca || e.en; };
+const exName = id => { const e = exById(id); return G().alias[id] || (LANG() === "es" && ES_EX[id]) || e.name || e.ca || e.en; };
 const exImgId = e => e.imgOf || (e.imgs ? e.id : null);
 const exImg = (e, n = 0) => { const i = exImgId(e); return i ? `${GYM_IMG_BASE}${i}/${n}.jpg` : null; };
-const exSearchText = e => norm([G().alias[e.id], e.name, e.ca, e.en, e.alias, ...e.pm.map(m => MUSCLE_LABEL[m])].filter(Boolean).join(" "));
+const exSearchText = e => norm([G().alias[e.id], e.name, e.ca, ES_EX[e.id], e.en, e.alias, ...e.pm.map(m => MUSCLE_LABEL[m]), ...e.pm.map(m => tr(MUSCLE_LABEL[m]))].filter(Boolean).join(" "));
 function searchExercises(q, muscle) {
   const list = [...G().custom.map(c => ({ ...c, custom: true })), ...GYM_DB];
   const nq = norm(q).trim(), toks = nq.split(" ").filter(Boolean);
@@ -93,14 +93,63 @@ const targetSummary = sets => {
 };
 
 // Historial d'un exercici: [{s: sessió, it: ítem}] de més recent a més antic
-function exHistory(exId, excludeId) {
+function exHistory(exId, excludeId, beforeTs) {
   const out = [];
   for (const s of G().sessions) {
-    if (s.id === excludeId) continue;
+    if (s.id === excludeId || (beforeTs && s.start >= beforeTs)) continue;
     for (const it of s.items) if (it.ex === exId && it.sets.some(x => x.done)) out.push({ s, it });
   }
   return out.sort((a, b) => (b.s.start || 0) - (a.s.start || 0));
 }
+// ——— rècords (PR): pes màxim, 1RM estimada i volum de l'exercici en una sessió ———
+const itemVolume = it => it.sets.filter(x => x.done && isWork(x)).reduce((t, x) => t + (numIn(x.w) || 0) * (numIn(x.reps) || 0), 0);
+function prBaseline(exId, s) {
+  const h = exHistory(exId, s.id, s.start);
+  if (!h.length) return null;                        // la primera vegada no compta com a rècord
+  let e1 = 0, w = 0, vol = 0;
+  for (const { it } of h) {
+    for (const x of it.sets) if (x.done && isWork(x)) { e1 = Math.max(e1, setE1(x)); w = Math.max(w, numIn(x.w) || 0); }
+    vol = Math.max(vol, itemVolume(it));
+  }
+  return { e1, w, vol };
+}
+function setPRs(x, base) {
+  if (!base || !x.done || !isWork(x)) return [];
+  const out = [], w = numIn(x.w) || 0, e = setE1(x);
+  if (w > 0 && w > base.w + 1e-9) out.push("w");
+  if (e > 0 && e > base.e1 + 0.05) out.push("e1");
+  return out;
+}
+const PR_LABEL = { w: "Pes màxim", e1: "1RM estimada", vol: "Volum" };
+function sessionPRs(s) {
+  const out = [];
+  for (const it of s.items) {
+    const base = prBaseline(it.ex, s); if (!base) continue;
+    const ws = it.sets.filter(x => x.done && isWork(x));
+    const w = Math.max(0, ...ws.map(x => numIn(x.w) || 0)), e = Math.max(0, ...ws.map(setE1)), v = itemVolume(it);
+    if (w > 0 && w > base.w + 1e-9) out.push({ ex: it.ex, t: "w", v: w, prev: base.w });
+    if (e > 0 && e > base.e1 + 0.05) out.push({ ex: it.ex, t: "e1", v: e, prev: base.e1 });
+    if (v > 0 && base.vol > 0 && v > base.vol) out.push({ ex: it.ex, t: "vol", v, prev: base.vol });
+  }
+  return out;
+}
+function announcePR(s, i, j) {
+  const it = s.items[i], x = it.sets[j], base = prBaseline(it.ex, s);
+  if (!base || !x.done || !isWork(x)) return;
+  const others = it.sets.filter((y, k) => k !== j && y.done && isWork(y));
+  const oW = Math.max(base.w, ...others.map(y => numIn(y.w) || 0)), oE = Math.max(base.e1, ...others.map(setE1));
+  const msgs = [];
+  const w = numIn(x.w) || 0, e = setE1(x);
+  if (w > oW + 1e-9) msgs.push(`${PR_LABEL.w}: ${fmt1(w)} kg (abans ${fmt1(base.w)})`);
+  if (e > oE + 0.05) msgs.push(`${PR_LABEL.e1}: ${fmt1(e)} kg (abans ${fmt1(base.e1)})`);
+  const vNow = itemVolume(it), vBefore = vNow - w * (numIn(x.reps) || 0);
+  if (base.vol > 0 && vNow > base.vol && vBefore <= base.vol) msgs.push(`${PR_LABEL.vol}: ${fmt(vNow)} kg (abans ${fmt(base.vol)})`);
+  if (msgs.length) {
+    toast("🏆 Rècord! " + msgs.join(" · "));
+    try { navigator.vibrate && navigator.vibrate([60, 40, 60, 40, 160]); } catch (e) {}
+  }
+}
+
 // Valors de la vegada anterior per a cada fila (W amb W, sèries efectives amb efectives)
 function prevPlaceholders(item, sessionId) {
   const h = exHistory(item.ex, sessionId)[0];
@@ -179,9 +228,9 @@ function viewTrainHome() {
     const nSets = t.items.reduce((n, it) => n + it.sets.filter(isWork).length, 0);
     html += `<div class="tpl">
       <div class="grow" data-g="tpl-edit" data-id="${t.id}" role="button">
-        <div class="tname">${esc(t.name || "Sense nom")}</div>
+        <div class="tname" data-nt>${esc(t.name || tr("Sense nom"))}</div>
         <div class="tsub">${t.items.length} exercicis · ${nSets} sèries efectives${last ? ` · últim ${esc(fmtShort(last.date))}` : ""}</div>
-        <div class="tex">${esc(t.items.map(i => exName(i.ex)).join(" · "))}</div>
+        <div class="tex" data-nt>${esc(t.items.map(i => exName(i.ex)).join(" · "))}</div>
       </div>
       <button class="btn primary sm" data-g="start-tpl" data-id="${t.id}">Comença</button>
     </div>`;
@@ -204,7 +253,7 @@ function viewTplEdit() {
     html += `<section class="card ex-card" data-ti="${i}">
       <div class="ex-head">
         <span class="blk">${labels[i]}</span>
-        <button class="ex-name" data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>
+        <button class="ex-name" data-nt data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>
         <button class="icon-btn sm" data-g="ti-menu" data-i="${i}" aria-label="Opcions">${ICON.dots}</button>
       </div>
       <div class="tset-head"><span>Tipus</span><span>RIR</span><span>Repes</span><span></span></div>
@@ -245,22 +294,24 @@ function viewSession() {
   const s = curSession(), editing = !!GU.edit, labels = blockLabels(s.items);
   let html = `<section class="card sess-head">
     <input class="input title-in" data-gs-top="name" value="${esc(s.name)}">
-    <div class="small muted" style="margin-top:6px">${esc(fmtLong(s.date))}${editing ? ` · ${fmtDur((s.end || s.start) - s.start)}` : ` · inici ${new Date(s.start).toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" })}`}</div>
+    <div class="small muted" style="margin-top:6px">${esc(fmtLong(s.date))}${editing ? ` · ${fmtDur((s.end || s.start) - s.start)}` : ` · inici ${new Date(s.start).toLocaleTimeString(LOC(), { hour: "2-digit", minute: "2-digit" })}`}</div>
   </section>`;
   s.items.forEach((it, i) => {
-    const e = exById(it.ex), kind = e.kind, prev = prevPlaceholders(it, s.id);
+    const e = exById(it.ex), kind = e.kind, prev = prevPlaceholders(it, s.id), base = prBaseline(it.ex, s);
+    const volPR = base && base.vol > 0 && itemVolume(it) > base.vol;
     const best = prev.all ? prev.all.filter(isWork).reduce((m, x) => Math.max(m, setE1(x)), 0) : 0;
     html += `<section class="card ex-card${it.ss ? " ss" : ""}" data-si="${i}">
       <div class="ex-head">
         <span class="blk">${labels[i]}</span>
-        <button class="ex-name" data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>
+        <button class="ex-name" data-nt data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>
         <button class="icon-btn sm" data-g="si-menu" data-i="${i}" aria-label="Opcions">${ICON.dots}</button>
       </div>
       <div class="ex-meta">${it.sets.some(x => x.goal || x.grir) ? `<span>Objectiu: ${esc(targetSummary(it.sets.map(x => ({ t: x.t, rir: x.grir, reps: x.goal }))))}</span>` : ""}${it.rest ? `<span>Descans ${fmtRest(it.rest)}</span>` : ""}</div>
       ${prev.date ? `<div class="ex-prev">Anterior (${esc(fmtShort(prev.date))}): ${esc(prev.all.map(x => setText(x, kind)).join(" · "))}${best ? ` · RM ≈ ${fmt1(best)} kg` : ""}</div>` : ""}
-      ${it.note ? `<div class="ex-note">${esc(it.note)}</div>` : ""}
+      ${it.note ? `<div class="ex-note" data-nt>${esc(it.note)}</div>` : ""}
       <div class="sset-head ${kind === "t" ? "time" : ""}"><span>Sèrie</span>${kind === "t" ? "<span>Temps</span>" : "<span>kg</span><span>Repes</span><span>RIR</span>"}<span></span></div>
-      ${it.sets.map((x, j) => setRowHTML(x, j, kind, prev.rows[j])).join("")}
+      ${it.sets.map((x, j) => setRowHTML(x, j, kind, prev.rows[j], base)).join("")}
+      <div class="vol-pr" ${volPR ? "" : "hidden"}>🏆 Rècord de volum en aquest exercici</div>
       <div class="row" style="margin-top:8px"><button class="btn sm" data-g="ss-add">${ICON.plus}Sèrie</button>
         ${it.sets.length > 1 ? `<button class="btn sm ghost" data-g="ss-rm-last">Treu l'última</button>` : ""}</div>
     </section>`;
@@ -272,23 +323,27 @@ function viewSession() {
     : `<div class="grid2"><button class="btn danger" data-g="sess-discard">Descarta</button><button class="btn primary" data-g="sess-finish">Finalitza</button></div>`;
   return html;
 }
-function setRowHTML(x, j, kind, pv) {
+function setRowHTML(x, j, kind, pv, base) {
+  const prs = setPRs(x, base);
   const ph = (f, d = "") => pv && pv[f] !== "" && pv[f] != null ? esc(pv[f]) : d;
   const rirPh = x.t === "N" ? (x.grir !== "" && x.grir != null ? esc(x.grir) : "") : x.t === "W" ? "" : "0";
-  return `<div class="sset ${x.done ? "done" : ""} ${kind === "t" ? "time" : ""}" data-sj="${j}">
+  return `<div class="sset ${x.done ? "done" : ""} ${kind === "t" ? "time" : ""} ${prs.length ? "pr" : ""}" data-sj="${j}" ${prs.length ? `title="Rècord: ${prs.map(p => PR_LABEL[p]).join(", ")}"` : ""}>
     <button class="tag t-${x.t}" data-g="tag-cycle" title="${esc(tagTitle(x))}">${j + 1}<small>${esc(tagLabel({ t: x.t, rir: x.grir }))}</small></button>
     ${kind === "t" ? `<input class="input num" inputmode="text" data-gs="time" value="${esc(x.time)}" placeholder="${ph("time", esc(x.goal || "mm:ss"))}">`
       : `<input class="input num" inputmode="decimal" data-gs="w" value="${esc(x.w)}" placeholder="${ph("w", "kg")}">
     <input class="input num" inputmode="numeric" data-gs="reps" value="${esc(x.reps)}" placeholder="${ph("reps", esc(x.goal || "—"))}">
     <input class="input num" inputmode="numeric" data-gs="rir" value="${esc(x.rir)}" placeholder="${rirPh}" ${x.t === "W" ? "disabled" : ""}>`}
-    <button class="chk" data-g="set-done" aria-label="Sèrie feta">${ICON.calc}</button>
+    <button class="chk" data-g="set-done" aria-label="Sèrie feta">${ICON.calc}${prs.length ? `<i class="prb">PR</i>` : ""}</button>
   </div>`;
 }
 function refreshSetRow(i, j) {
   const s = curSession(), it = s.items[i], row = $(`[data-si="${i}"] [data-sj="${j}"]`);
   if (!row) return;
   const prev = prevPlaceholders(it, s.id);
-  row.outerHTML = setRowHTML(it.sets[j], j, exById(it.ex).kind, prev.rows[j]);
+  row.outerHTML = setRowHTML(it.sets[j], j, exById(it.ex).kind, prev.rows[j], prBaseline(it.ex, s));
+  const vb = $(`[data-si="${i}"] .vol-pr`), base = prBaseline(it.ex, s);
+  const volPR = base && base.vol > 0 && itemVolume(it) > base.vol;
+  if (vb) vb.hidden = !volPR;
 }
 
 // ——————————————————— temporitzador de descans ———————————————————
@@ -368,15 +423,8 @@ function finishSession() {
   const a = G().active;
   const pending = a.items.reduce((n, it) => n + it.sets.filter(x => !x.done && x.w === "" && x.reps === "" && x.time === "").length, 0);
   if (!confirm(pending ? `Finalitzar la sessió? Hi ha ${pending} sèries buides que no es desaran.` : "Finalitzar la sessió?")) return;
-  // Rècords: RM estimada millor que totes les anteriors
-  const prs = [];
-  for (const it of a.items) {
-    const best = Math.max(0, ...it.sets.filter(x => x.done).map(setE1));
-    if (!best) continue;
-    const before = Math.max(0, ...exHistory(it.ex, a.id).flatMap(h => h.it.sets.map(setE1)));
-    if (before && best > before + 0.05) prs.push({ ex: it.ex, best, before });
-  }
   const s = cleanSession(a);
+  const prs = s.prs = sessionPRs(s);
   s.end = Date.now(); delete s.timer; delete s.upd;
   if (!s.items.length) { G().active = null; save(); syncWakeLock(); render(); toast("Sessió buida: no s'ha desat"); return; }
   const sameDay = G().sessions.filter(x => x.date === s.date).length;
@@ -395,6 +443,9 @@ function sessionStats(s) {
   for (const it of s.items) for (const x of it.sets) if (x.done && isWork(x)) { sets++; vol += (numIn(x.w) || 0) * (numIn(x.reps) || 0); }
   return { sets, vol, dur: (s.end || Date.now()) - s.start };
 }
+function prList(prs) {
+  return prs.map(p => `<div class="kv"><span><span data-nt>${esc(exName(p.ex))}</span> · ${PR_LABEL[p.t]}</span><b class="num">${p.t === "vol" ? fmt(p.v) : fmt1(p.v)} kg <small class="faint">(abans ${p.t === "vol" ? fmt(p.prev) : fmt1(p.prev)})</small></b></div>`).join("");
+}
 function showSessionSummary(s, prs, newType) {
   const st = sessionStats(s);
   openSheet("Sessió desada", `
@@ -403,7 +454,7 @@ function showSessionSummary(s, prs, newType) {
       <div class="kpi"><span>Sèries</span><b class="num">${st.sets}</b></div>
       <div class="kpi"><span>Volum</span><b class="num">${fmt(st.vol)}</b><small>kg</small></div>
     </div>
-    ${prs.length ? `<section class="card"><h2>Rècords nous</h2>${prs.map(p => `<div class="kv"><span>${esc(exName(p.ex))}</span><b class="num">RM ≈ ${fmt1(p.best)} kg <small class="faint">(abans ${fmt1(p.before)})</small></b></div>`).join("")}</section>` : ""}
+    ${prs.length ? `<section class="card"><h2>🏆 Rècords nous <span class="sub">${prs.length}</span></h2>${prList(prs)}</section>` : ""}
     ${newType ? `<p class="small muted">He posat l'avís del dia a <b>${newType === "double" ? "Entreno doble" : "Entreno"}</b> perquè l'objectiu de macros d'avui ho tingui en compte.</p>` : ""}
     <button class="btn primary block" data-action="sheet-close">D'acord</button>`);
 }
@@ -412,9 +463,9 @@ function showSessionSummary(s, prs, newType) {
 function sessionRow(s) {
   const st = sessionStats(s);
   return `<div class="hrow" data-g="sess-open" data-id="${s.id}" role="button">
-    <div class="hdate"><b class="num">${parseKey(s.date).getDate()}</b><small>${esc(new Intl.DateTimeFormat("ca-ES", { month: "short" }).format(parseKey(s.date)).replace(".", ""))}</small></div>
-    <div class="grow"><div class="tname">${esc(s.name)}</div><div class="tsub">${fmtDur(st.dur)} · ${st.sets} sèries · ${fmt(st.vol)} kg</div>
-    <div class="tex">${esc(s.items.map(i => exName(i.ex)).join(" · "))}</div></div></div>`;
+    <div class="hdate"><b class="num">${parseKey(s.date).getDate()}</b><small>${esc(new Intl.DateTimeFormat(LOC(), { month: "short" }).format(parseKey(s.date)).replace(".", ""))}</small></div>
+    <div class="grow"><div class="tname" data-nt>${esc(s.name)}</div><div class="tsub">${fmtDur(st.dur)} · ${st.sets} sèries · ${fmt(st.vol)} kg</div>
+    <div class="tex" data-nt>${esc(s.items.map(i => exName(i.ex)).join(" · "))}</div></div></div>`;
 }
 function viewHistory() {
   const L = [...G().sessions].sort((a, b) => b.start - a.start);
@@ -426,7 +477,7 @@ function viewHistory() {
       if (month) html += `</section>`;
       month = m;
       const n = L.filter(x => x.date.startsWith(m)).length;
-      html += `<h3 class="view-title">${esc(cap(new Intl.DateTimeFormat("ca-ES", { month: "long", year: "numeric" }).format(parseKey(m + "-01"))))} <span class="faint">· ${n} sessions</span></h3><section class="card">`;
+      html += `<h3 class="view-title">${esc(cap(new Intl.DateTimeFormat(LOC(), { month: "long", year: "numeric" }).format(parseKey(m + "-01"))))} <span class="faint">· ${n} sessions</span></h3><section class="card">`;
     }
     html += sessionRow(s);
   }
@@ -436,11 +487,12 @@ function openSessionDetail(id) {
   const s = G().sessions.find(x => x.id === id);
   if (!s) return;
   const st = sessionStats(s), labels = blockLabels(s.items);
-  openSheet(esc(s.name), `
+  openSheet(`<span data-nt>${esc(s.name)}</span>`, `
     <p class="small muted" style="margin:-6px 0 12px">${esc(fmtLong(s.date))} · ${fmtDur(st.dur)} · ${st.sets} sèries · ${fmt(st.vol)} kg</p>
     ${s.items.map((it, i) => { const k = exById(it.ex).kind; const b = Math.max(0, ...it.sets.map(setE1)); return `<div class="hex">
-      <div class="row"><span class="blk">${labels[i]}</span><button class="ex-name" data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>${b ? `<span class="faint small num" style="margin-left:auto">RM ≈ ${fmt1(b)}</span>` : ""}</div>
+      <div class="row"><span class="blk">${labels[i]}</span><button class="ex-name" data-nt data-g="ex-info" data-id="${esc(it.ex)}">${esc(exName(it.ex))}</button>${b ? `<span class="faint small num" style="margin-left:auto">RM ≈ ${fmt1(b)}</span>` : ""}</div>
       <div class="hsets">${it.sets.map(x => `<span class="t-${x.t}"><i>${esc(x.t === "N" ? (numIn(x.rir) != null ? "R" + x.rir : "") : x.t)}</i>${esc(setText(x, k))}</span>`).join("")}</div></div>`; }).join("")}
+    ${(s.prs || []).length ? `<section class="card" style="margin-top:12px"><h2>🏆 Rècords</h2>${prList(s.prs)}</section>` : ""}
     ${s.note ? `<p class="small" style="white-space:pre-wrap">${esc(s.note)}</p>` : ""}
     <div class="grid2" style="margin-top:12px"><button class="btn" data-g="sess-edit" data-id="${s.id}">Edita</button><button class="btn" data-g="sess-to-tpl" data-id="${s.id}">Desa com a plantilla</button></div>
     <button class="btn danger block" style="margin-top:8px" data-g="sess-del" data-id="${s.id}">Elimina la sessió</button>`);
@@ -454,7 +506,7 @@ function exRowHTML(e, act) {
   const img = exImg(e);
   return `<div class="exrow" data-g="${act}" data-id="${esc(e.id)}" role="button">
     <div class="thumb">${img ? `<img src="${img}" loading="lazy" alt="" onerror="this.remove()">` : esc(exName(e.id).slice(0, 2).toUpperCase())}</div>
-    <div class="grow"><div class="fname">${esc(exName(e.id))}${e.custom ? ` <span class="src mine">propi</span>` : ""}</div>
+    <div class="grow"><div class="fname"><span data-nt>${esc(exName(e.id))}</span>${e.custom ? ` <span class="src mine">propi</span>` : ""}</div>
       <div class="fmac">${esc(e.pm.map(m => MUSCLE_LABEL[m]).join(", "))}${e.sm.length ? ` <span class="faint">+ ${esc(e.sm.map(m => MUSCLE_LABEL[m]).join(", "))}</span>` : ""}</div></div>
     ${act === "pick-ex" ? `<button class="icon-btn sm" data-g="ex-info" data-id="${esc(e.id)}" aria-label="Informació">${ICON.info}</button>` : ""}
   </div>`;
@@ -471,7 +523,7 @@ function openExInfo(id) {
   const e = exById(id), custom = G().custom.some(c => c.id === id);
   const h = exHistory(id), best = Math.max(0, ...h.flatMap(x => x.it.sets.map(setE1)));
   const i0 = exImg(e, 0), i1 = exImg(e, 1);
-  openSheet(esc(exName(id)), `
+  openSheet(`<span data-nt>${esc(exName(id))}</span>`, `
     ${i0 ? `<div class="ex-anim"><img src="${i0}" alt="Posició inicial" onerror="this.parentNode.remove()">${i1 ? `<img class="b" src="${i1}" alt="Posició final" onerror="this.remove()">` : ""}</div>` : `<div class="ex-anim none">Sense imatge</div>`}
     ${e.en && !custom ? `<p class="small faint" style="margin:-4px 0 10px">${esc(e.en)}</p>` : ""}
     <div class="mus"><span>Principals</span><div>${e.pm.map(m => `<i class="mchip p">${MUSCLE_LABEL[m]}</i>`).join("") || "—"}</div></div>
@@ -482,7 +534,7 @@ function openExInfo(id) {
       ${best ? `<div class="kv"><span>Millor RM estimada</span><b class="num">${fmt1(best)} kg</b></div>` : ""}
       <button class="btn block" style="margin-top:10px" data-g="prog-open" data-id="${esc(id)}">Veure el progrés</button>` : ""}
     <label class="field" style="margin-top:14px"><span>El teu nom per a aquest exercici (opcional)</span>
-      <div class="row"><input class="input grow" id="ex-alias" value="${esc(G().alias[id] || "")}" placeholder="${esc(e.name || e.ca || e.en)}"><button class="btn" data-g="alias-save" data-id="${esc(id)}">Desa</button></div></label>
+      <div class="row"><input class="input grow" id="ex-alias" value="${esc(G().alias[id] || "")}" placeholder="${esc((LANG() === "es" && ES_EX[id]) || e.name || e.ca || e.en)}"><button class="btn" data-g="alias-save" data-id="${esc(id)}">Desa</button></div></label>
     ${custom ? `<div class="grid2"><button class="btn" data-g="custom-edit" data-id="${esc(id)}">Edita</button><button class="btn danger" data-g="custom-del" data-id="${esc(id)}">Elimina</button></div>` : ""}
     ${i0 ? `<p class="small faint" style="margin:10px 0 0">Imatges: free-exercise-db (domini públic).</p>` : ""}`);
 }
@@ -535,7 +587,7 @@ function pickExercise(exId) {
 }
 function openItemMenu(kind, i) {
   const list = kind === "tpl" ? GU.tpl.items : curSession().items, it = list[i];
-  openSheet(esc(exName(it.ex)), `
+  openSheet(`<span data-nt>${esc(exName(it.ex))}</span>`, `
     <div class="menu">
       <button class="btn block" data-g="im" data-op="replace" data-k="${kind}" data-i="${i}">Canvia l'exercici</button>
       ${i > 0 ? `<button class="btn block" data-g="im" data-op="up" data-k="${kind}" data-i="${i}">Mou amunt</button>` : ""}
@@ -578,7 +630,7 @@ function viewProgHome() {
   html += `<h3 class="view-title">Progrés per exercici</h3><input class="input" type="search" id="gym-prog-q" placeholder="Cerca…" value="${esc(GU.progQ)}" style="margin-bottom:10px"><section class="card">`;
   html += list.length ? list.map(([id, m]) => {
     const h = exHistory(id), b = Math.max(0, ...h.flatMap(x => x.it.sets.map(setE1)));
-    return `<div class="exrow" data-g="prog-open" data-id="${esc(id)}" role="button"><div class="grow"><div class="fname">${esc(exName(id))}</div>
+    return `<div class="exrow" data-g="prog-open" data-id="${esc(id)}" role="button"><div class="grow"><div class="fname" data-nt>${esc(exName(id))}</div>
       <div class="fmac">${m.n} sessions · últim ${esc(fmtShort(keyOf(new Date(m.last))))}</div></div>${b ? `<div class="fk num">${fmt1(b)}<small>RM kg</small></div>` : ""}</div>`;
   }).join("") : `<div class="empty">Quan registris sessions, aquí veuràs l'evolució dels pesos de cada exercici.</div>`;
   return html + `</section>`;
@@ -592,7 +644,7 @@ function exSeries(id) {
       time: Math.max(0, ...w.map(x => parseTime(x.time) || 0)), top, sets: w };
   });
 }
-function gymLineChart(pts, unit, dec = 1) {
+function gymLineChart(pts, unit, dec = 1, markBest = true) {
   if (pts.length < 2) return `<div class="empty small">Calen almenys 2 sessions per dibuixar la gràfica.</div>`;
   const W = 340, H = 170, L = 38, R = 10, T = 12, B = 22, pw = W - L - R, ph = H - T - B;
   const vs = pts.map(p => p.v), span = Math.max(...vs) - Math.min(...vs) || Math.max(...vs) * 0.1 || 1;
@@ -604,7 +656,7 @@ function gymLineChart(pts, unit, dec = 1) {
   let g = `<g class="grid">`;
   for (const t of [lo, (lo + hi) / 2, hi]) g += `<line x1="${L}" x2="${W - R}" y1="${y(t)}" y2="${y(t)}"/><text x="${L - 6}" y="${y(t) + 3}" text-anchor="end">${hi >= 1000 ? (Math.round(t / 100) / 10).toLocaleString("ca-ES") + "k" : f(t)}</text>`;
   g += `</g>`;
-  const best = Math.max(...vs);
+  const best = markBest ? Math.max(...vs) : NaN;
   let m = `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${x(p, i)},${y(p.v)}`).join("")}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
   pts.forEach((p, i) => {
     m += `<circle cx="${x(p, i)}" cy="${y(p.v)}" r="${p.v === best ? 5 : 3.5}" fill="${p.v === best ? "var(--warn)" : "var(--accent)"}" stroke="var(--surface)" stroke-width="2"/>`;
@@ -616,7 +668,7 @@ function gymLineChart(pts, unit, dec = 1) {
 function viewProgEx() {
   const id = GU.progEx, e = exById(id), ser = exSeries(id), kind = e.kind;
   let html = `<div class="row" style="margin-bottom:10px"><button class="icon-btn" data-g="prog-back" aria-label="Enrere">${ICON.left}</button>
-    <button class="ex-name big grow" data-g="ex-info" data-id="${esc(id)}">${esc(exName(id))}</button></div>`;
+    <button class="ex-name big grow" data-nt data-g="ex-info" data-id="${esc(id)}">${esc(exName(id))}</button></div>`;
   if (!ser.length) return html + `<section class="card"><div class="empty">Encara no has registrat aquest exercici.</div></section>`;
   const hasW = ser.some(p => p.wmax > 0);
   const metrics = kind === "t" ? [["time", "Temps"]] : hasW ? [["e1rm", "RM est."], ["wmax", "Pes màx."], ["vol", "Volum"], ["reps", "Repes"]] : [["reps", "Repes màx."], ["vol", "Volum"]];
@@ -765,7 +817,7 @@ function seedRoutine() {
       I("Reverse_Barbell_Preacher_Curls", [R(1, "15-20"), R(1, "15-20"), F("15-20")], 60, { ss: true }),
     ]],
   ];
-  for (const [name, items] of T) G().templates.push({ id: uid(), name, note: "", items, updated: Date.now() });
+  for (const [name, items] of T) { items.forEach(it => it.note = tr(it.note)); G().templates.push({ id: uid(), name: tr(name), note: "", items, updated: Date.now() }); }
   save(); render();
   toast("Rutina carregada: revisa-la i edita el que calgui");
 }
@@ -821,6 +873,7 @@ function gymClick(e) {
         if (pv) { if (x.w === "") x.w = pv.w ?? ""; if (x.reps === "") x.reps = pv.reps ?? ""; if (x.time === "") x.time = pv.time ?? ""; }
         // Descans de l'exercici (en un superset, posa 0 al primer per encadenar-lo amb el següent)
         if (!GU.edit) startRest(+it.rest || 0, exName(it.ex));
+        announcePR(s, i, j);
       }
       gymSave(true); refreshSetRow(i, j); break;
     }
@@ -857,6 +910,7 @@ function gymClick(e) {
     case "edit-cancel": GU.edit = null; render(); break;
     case "edit-save": {
       const ed = cleanSession(GU.edit), L = G().sessions, k = L.findIndex(x => x.id === ed.id);
+      ed.prs = sessionPRs(ed);
       if (k >= 0) { if (ed.items.length) L[k] = ed; else L.splice(k, 1); }
       GU.edit = null; GU.view = "hist"; save(); render(); toast("Sessió actualitzada"); break;
     }

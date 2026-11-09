@@ -443,3 +443,16 @@ div.field { margin-bottom: 12px; }
   .tabbar button { font-size: 10px; }
 }
 body:has(.rest-bar:not([hidden])) .toast { bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 92px); }
+/* rècords */
+.chk { position: relative; }
+.prb { position: absolute; top: -6px; right: -6px; font-style: normal; font-size: 9.5px; font-weight: 800; letter-spacing: .02em; background: var(--warn); color: #fff; border-radius: 999px; padding: 2px 5px; line-height: 1.1; }
+.sset.pr .input { box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--warn) 60%, transparent); }
+.vol-pr { margin-top: 6px; font-size: 12.5px; font-weight: 650; color: var(--warn); }
+/* classificació */
+.lb-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-top: 1px solid var(--border); }
+.lb-row:first-child { border-top: 0; }
+.lb-row.me { background: var(--accent-soft); border-radius: 12px; border-top-color: transparent; padding: 10px; }
+.lb-row.me + .lb-row { border-top-color: transparent; }
+.lb-pos { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 750; font-size: 13px; background: var(--surface-2); color: var(--muted); flex: none; }
+.lb-pos.p1 { background: #e8b923; color: #3b2d00; } .lb-pos.p2 { background: #b9c0c8; color: #20262c; } .lb-pos.p3 { background: #c98a52; color: #2e1a08; }
+.lb-row b.num { font-size: 15px; }

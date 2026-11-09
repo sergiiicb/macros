@@ -24,8 +24,25 @@ Sense aquest pas l'app funciona igual, però sense inici de sessió (dades nomé
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Dades de cada usuari: només ell
     match /users/{uid}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Noms d'usuari (per trobar amics)
+    match /usernames/{name} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+      allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
+    }
+    // Resum públic: el llegeixen només ell i els amics que ell ha acceptat
+    match /pub/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || request.auth.uid in resource.data.friends);
+      allow write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Sol·licituds d'amistat
+    match /requests/{rid} {
+      allow read, delete: if request.auth != null && (resource.data.to == request.auth.uid || resource.data.from == request.auth.uid);
+      allow create: if request.auth != null && request.resource.data.from == request.auth.uid;
     }
   }
 }
@@ -57,12 +74,27 @@ Un cop oberta la primera vegada funciona sense connexió. La lectura d'etiquetes
 
 A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que has menjat: *"per dinar dos-cents grams de pollastre, cinquanta de pebrot i cent cinquanta d'arròs"*. Detecta l'àpat, entén números dits amb paraules i ho calcula sol. L'idioma (català o castellà) es tria a Perfil. Fa servir el reconeixement de veu del navegador (gratuït; cal connexió). Si el navegador no el permet, el micròfon del teclat del mòbil fa el mateix.
 
+## Amics i classificació
+
+Gràfics → **Amics**. Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, dies complint kcal, proteïna i aigua, dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
+
+Cada persona necessita el seu compte (usuari i contrasenya). Al mateix mòbil es pot canviar de compte: en tancar la sessió, les dades d'aquell compte s'esborren del dispositiu (queden al núvol) i el següent usuari entra amb les seves.
+
+## Mesures corporals
+
+Gràfics → **Mesures corporals → Registra**: espatlles, pectoral, bíceps, avantbraç, cintura, maluc, glutis, quàdriceps, bessó, coll i % de greix. Gràfica per mesura i variació a 7 dies, 30 dies i total.
+
+## Idioma
+
+Perfil → **Idioma de l'app**: català o castellà. Canvia també l'idioma del dictat per veu (es pot tornar a canviar a part).
+
 ## Gimnàs
 
 - **Entrenar:** plantilles amb exercicis, sèries (escalfament W, RIR n, fallo F, drop set D), repeticions objectiu i descans. **Comença** obre la sessió: cada sèrie té kg, repes i RIR, i en gris surt el que vas fer l'últim cop. Si marques ✓ sense escriure res, copia els valors de l'últim cop. En marcar una sèrie comença el descans (sona i vibra en acabar). La sessió en curs es guarda contínuament: si tanques l'app, en tornar-la a obrir hi segueixes.
 - En **finalitzar**, si l'avís del dia era «Sense avís» o «No entreno», passa a «Entreno» (o «Entreno doble» si és la segona sessió) perquè les macros ho tinguin en compte.
 - **Supersets:** marca «Superset amb l'anterior» a la plantilla. El descans és el de cada exercici (posa 0 al primer per encadenar-los).
 - **Exercicis:** ~750 exercicis amb foto del moviment i músculs principals i secundaris. Toca el nom de qualsevol exercici (també durant la sessió) per veure'n la fitxa. Pots posar-li el teu propi nom i crear exercicis propis.
+- **Rècords:** mentre entrenes, en marcar una sèrie et diu si has superat el teu pes màxim, la 1RM estimada o el volum d'aquell exercici (etiqueta PR i avís). Queden desats a la sessió i surten al resum i a l'historial.
 - **Progrés:** sèries per múscul dels últims 7 dies, i per a cada exercici la RM estimada, el pes màxim, el volum, els rècords per repeticions i l'historial.
 - **RM·RIR:** posa pes, repes i RIR d'una sèrie: et dona la RM estimada, quantes repes faries amb un altre pes a cada RIR i quin pes usar per a cada nombre de repes.
 - Fotos dels exercicis: free-exercise-db (domini públic). Es baixen el primer cop que les veus i després funcionen sense connexió.
@@ -95,9 +127,16 @@ Puja els fitxers nous al mateix repositori (substitueixen els antics). Les dades
 
 ## Com calcula l'objectiu
 
+- **Entrenos:** si en les últimes 4 setmanes has registrat almenys 4 sessions, fa servir la freqüència i la durada reals en lloc de les del perfil.
+- **Despesa real:** amb 10 dies o més amb els menjars registrats sencers i 3 pesatges o més en almenys 10 dies, calcula la despesa real (ingesta mitjana − canvi de pes × 7.700 kcal/kg) i la barreja amb la fórmula; com més dades, més pes hi té (fins al 85%). Els dies a mig registrar (menys del 60% de l'objectiu) no compten. Es pot desactivar a Perfil.
+
 - **Metabolisme basal:** Mifflin-St Jeor, o Katch-McArdle si poses el % de greix.
 - **Despesa:** basal × activitat fora del gimnàs + (MET de la intensitat − 1) × pes × hores × entrenos/setmana ÷ 7.
 - **Objectiu:** volum +15 %, volum lleuger +8 %, manteniment 0, dèficit lleuger −12 %, dèficit −20 %. Mai per sota del basal.
 - **Macros:** proteïna 1,8–2,2 g/kg segons objectiu, greix 0,8–0,9 g/kg (mínim 20 % de les kcal), la resta hidrats.
 - **Avís del dia:** no entreno −10 %; entreno i entreno doble s'ajusten perquè la mitjana setmanal quedi a l'objectiu. Només canvien els hidrats.
 - **Aigua:** 35 ml/kg + 0,5 L per hora d'entreno del dia.
+
+## Actualitzar l'app (important)
+
+El zip **no porta `firebase-config.js`**: el teu es queda al repositori. Puja-hi tot el contingut del zip i no esborris aquest fitxer.

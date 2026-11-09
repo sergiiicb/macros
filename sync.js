@@ -28,18 +28,18 @@ const saveMeta = () => { try { localStorage.setItem(SYNC_META_KEY, JSON.stringif
 
 // ——— trossos ———
 function toChunks(st) {
-  const c = { profile: st.profile, foods: st.foods, weights: st.weights };
+  const c = { profile: st.profile, foods: st.foods, weights: st.weights, measures: st.measures || [] };
   for (const [k, v] of Object.entries(st.days || {})) (c["days_" + k.slice(0, 7)] ||= {})[k] = v;
   const g = st.gym || {};
   c.gym = { templates: g.templates || [], custom: g.custom || [], alias: g.alias || {}, rest: g.rest ?? 120 };
   c.gymact = g.active || null;
   for (const s of g.sessions || []) (c["gs_" + s.date.slice(0, 7)] ||= []).push(s);
   const misc = {};
-  for (const k of Object.keys(st)) if (!["profile", "foods", "weights", "days", "gym", "savedAt"].includes(k)) misc[k] = st[k];
+  for (const k of Object.keys(st)) if (!["profile", "foods", "weights", "measures", "days", "gym", "savedAt", "owner"].includes(k)) misc[k] = st[k];
   c.misc = misc;
   return c;
 }
-const emptyOf = id => id.startsWith("days_") ? {} : id.startsWith("gs_") ? [] : id === "gymact" ? null : id === "foods" || id === "weights" ? [] : id === "gym" ? { templates: [], custom: [], alias: {} } : {};
+const emptyOf = id => id.startsWith("days_") ? {} : id.startsWith("gs_") ? [] : id === "gymact" ? null : id === "foods" || id === "weights" || id === "measures" ? [] : id === "gym" ? { templates: [], custom: [], alias: {} } : {};
 function isEmptyChunk(id, v) {
   if (v == null) return true;
   if (id === "profile") return !v.weight && !v.age && !v.height;
@@ -51,6 +51,7 @@ function applyChunk(st, id, v) {
   if (id === "profile") st.profile = { ...DEFAULT.profile, ...(v || {}) };
   else if (id === "foods") st.foods = v || [];
   else if (id === "weights") st.weights = v || [];
+  else if (id === "measures") st.measures = v || [];
   else if (id.startsWith("days_")) { const m = id.slice(5); for (const k of Object.keys(st.days)) if (k.startsWith(m)) delete st.days[k]; Object.assign(st.days, v || {}); }
   else if (id === "gym") Object.assign(st.gym, { templates: v.templates || [], custom: v.custom || [], alias: v.alias || {}, rest: v.rest ?? st.gym.rest });
   else if (id === "gymact") st.gym.active = v || null;
@@ -75,7 +76,7 @@ function mergeChunk(id, L, R) {
     return out;
   }
   if (id.startsWith("gs_") || id === "foods") return unionBy(L, R, x => x.id);
-  if (id === "weights") return unionBy(L, R, x => x.d);
+  if (id === "weights" || id === "measures") return unionBy(L, R, x => x.d);
   if (id === "gym") return { templates: unionBy(L.templates, R.templates, x => x.id, (x, y) => (x.updated || 0) > (y.updated || 0) ? x : y),
     custom: unionBy(L.custom, R.custom, x => x.id), alias: { ...L.alias, ...R.alias }, rest: R.rest ?? L.rest };
   if (id === "gymact") return (L.upd || 0) > (R.upd || 0) ? L : R;
@@ -102,7 +103,11 @@ async function syncInit() {
   FB.onAuthStateChanged(FB.auth, user => {
     if (user) {
       SYNC.user = emailToUser(user.email); SYNC.uid = user.uid; SYNC.state = "in";
+      // Dades locals d'un altre compte: no es barregen, es buiden (estan guardades al núvol d'aquell compte)
+      if (S.owner && S.owner !== user.uid) { clearLocalData(); toast(`Benvingut/da, ${SYNC.user}`); }
+      if (S.owner !== user.uid) { S.owner = user.uid; saveLocalOnly(); }
       syncMeta = loadMeta(user.uid);
+      ensurePublicProfile().catch(e => console.warn(e));
       hideLogin();
       try { localStorage.removeItem(SKIP_KEY); } catch (e) {}
       syncNow();
@@ -129,6 +134,7 @@ async function syncNow() {
     await syncPull();
     await syncPush();
     await syncImages();
+    await pushPublicStats();
     SYNC.lastOk = Date.now(); SYNC.err = null;
   } catch (e) {
     console.error(e);
@@ -258,12 +264,30 @@ async function doAuth(create) {
   } catch (e) { show(authMsg(e)); }
   $$("#login button").forEach(b => b.disabled = false);
 }
+function hasUnsynced() {
+  if (!syncMeta) return false;
+  const local = toChunks(S), ids = new Set([...Object.keys(local), ...Object.keys(syncMeta.h)]);
+  for (const id of ids) if (hashOf(id in local ? local[id] : emptyOf(id)) !== syncMeta.h[id]) return true;
+  return false;
+}
+function clearLocalData() {
+  S = normalize(null);
+  saveLocalOnly();
+  IDB.keys().then(ks => ks.forEach(k => IDB.del(k))).catch(() => {});
+  try { localStorage.removeItem(SYNC_META_KEY); } catch (e) {}
+  GU.tpl = GU.edit = null; GU.progEx = null;
+  if (typeof FR !== "undefined") Object.assign(FR, { friends: [], incoming: [], loaded: false });
+  updateTimerBar(); applyTheme(); render();
+}
 async function syncLogout() {
-  if (!confirm("Tancar la sessió? Les dades es queden en aquest dispositiu, però deixaran de sincronitzar-se.")) return;
+  if (!confirm("Tancar la sessió? Les dades d'aquest compte s'esborraran d'aquest dispositiu (queden guardades al núvol i les recuperaràs en tornar a entrar).")) return;
   clearTimeout(pushT);
   await syncNow();
-  try { localStorage.removeItem(SYNC_META_KEY); localStorage.setItem(SKIP_KEY, "1"); } catch (e) {}
+  if (hasUnsynced() && !confirm("Hi ha canvis que encara no s'han pogut pujar (potser no tens connexió). Si tanques la sessió ara, es perdran. Vols continuar igualment?")) return;
   await FB.signOut(FB.auth);
+  clearLocalData();
+  try { localStorage.removeItem(SKIP_KEY); } catch (e) {}
+  showLogin();
   toast("Sessió tancada");
 }
 function openPasswordChange() {
@@ -289,7 +313,7 @@ async function savePasswordChange() {
 function syncStatusText() {
   if (SYNC.busy) return "Sincronitzant…";
   if (SYNC.err) return SYNC.err;
-  if (SYNC.lastOk) return "Sincronitzat " + new Intl.DateTimeFormat("ca-ES", { hour: "2-digit", minute: "2-digit" }).format(new Date(SYNC.lastOk));
+  if (SYNC.lastOk) return "Sincronitzat " + new Intl.DateTimeFormat(LOC(), { hour: "2-digit", minute: "2-digit" }).format(new Date(SYNC.lastOk));
   return "Pendent";
 }
 function syncProfileHTML() {

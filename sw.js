@@ -1,6 +1,6 @@
 // Service worker: l'app funciona sense connexió un cop oberta per primer cop.
-const VERSION = "macros-v7";
-const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "gym-db.js", "gym.js", "sync.js", "firebase-config.js",
+const VERSION = "macros-v8";
+const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "gym-db.js", "gym.js", "sync.js", "friends.js", "i18n.js", "firebase-config.js",
   "lib/firebase-app.js", "lib/firebase-auth.js", "lib/firebase-firestore-lite.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 

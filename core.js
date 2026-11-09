@@ -178,12 +178,14 @@ const GOALS = {
   mildcut:  { label: "Dèficit lleuger", adj: -0.12, prot: 2.0, fat: 0.8 },
   cut:      { label: "Dèficit",         adj: -0.20, prot: 2.2, fat: 0.8 },
 };
+// MET mitjans d'una sessió de força comptant-hi els descansos (Compendium of Physical Activities):
+// 3,5 = sèries de 8-15 amb descansos llargs · 5 = esforç vigorós · 6 = circuits o olímpics amb poc descans
 const INTENSITY = {
-  vhigh:  { label: "Molt intens",  met: 8 },
-  high:   { label: "Intens",       met: 6.5 },
-  mod:    { label: "Moderat",      met: 5 },
+  vhigh:  { label: "Molt intens",  met: 6 },
+  high:   { label: "Intens",       met: 5 },
+  mod:    { label: "Moderat",      met: 4.25 },
   low:    { label: "Lleuger",      met: 3.5 },
-  vlow:   { label: "Molt lleuger", met: 2.5 },
+  vlow:   { label: "Molt lleuger", met: 3 },
 };
 const NEAT = {
   sed:    { label: "Sedentari (estudi/oficina, < 5.000 passos)", f: 1.2 },
@@ -192,7 +194,9 @@ const NEAT = {
   vactive:{ label: "Molt actiu (feina física, > 12.000 passos)", f: 1.55 },
 };
 
-function computeTargets(pr) {
+// opts.train = { sessions, hours } mesurats als entrenos registrats
+// opts.adaptive = { tdee, conf } despesa real calculada amb la ingesta i l'evolució del pes
+function computeTargets(pr, opts = {}) {
   const w = +pr.weight || 0, h = +pr.height || 0, a = +pr.age || 0;
   if (!w || !h || !a) return null;
   const bf = +pr.bodyFat || 0;
@@ -201,10 +205,15 @@ function computeTargets(pr) {
   else { bmr = 10 * w + 6.25 * h - 5 * a + (pr.sex === "f" ? -161 : 5); bmrMethod = "Mifflin-St Jeor"; }
   const neat = (NEAT[pr.neat] || NEAT.light).f;
   const met = (INTENSITY[pr.intensity] || INTENSITY.mod).met;
-  const n = Math.max(0, +pr.sessions || 0), hrs = Math.max(0, +pr.hours || 0);
-  const sessionKcal = Math.max(0, (met - 1) * w * hrs);        // despesa extra d'una sessió
+  const tr = opts.train;
+  const n = tr ? tr.sessions : Math.max(0, +pr.sessions || 0), hrs = tr ? tr.hours : Math.max(0, +pr.hours || 0);
+  const sessionKcal = Math.max(0, (met - 1) * w * hrs);        // despesa extra d'una sessió (net, sense el basal)
   const exDaily = sessionKcal * n / 7;
-  const tdee = bmr * neat + exDaily;
+  const tdeeFormula = bmr * neat + exDaily;
+  // Despesa real: es barreja amb la fórmula segons la confiança (dies registrats i temps de pesatges)
+  const ad = opts.adaptive;
+  const useAd = !!(ad && ad.tdee && Math.abs(ad.tdee / tdeeFormula - 1) <= 0.35);
+  const tdee = useAd ? tdeeFormula * (1 - ad.conf) + ad.tdee * ad.conf : tdeeFormula;
   const goal = GOALS[pr.goal] || GOALS.maint;
   let kcal = tdee * (1 + goal.adj) + (+pr.manualAdj || 0);
   let floored = false;
@@ -226,7 +235,22 @@ function computeTargets(pr) {
     active: { label: "Dia molt actiu (sense gimnàs)", pct: 0, hours: 0.75 },
     refeed: { label: "Refeed / dia alt",     pct: 0.15, hours: hrs },
   };
-  return { bmr, bmrMethod, neat, tdee, sessionKcal, kcal, prot, fat, carbs, floored, goal, dayTypes };
+  return { bmr, bmrMethod, neat, tdee, tdeeFormula, adaptive: useAd ? ad : null, adaptiveRejected: !!(ad && ad.tdee && !useAd), train: { sessions: n, hours: hrs, measured: !!tr }, sessionKcal, kcal, prot, fat, carbs, floored, goal, dayTypes };
+}
+
+// Despesa real a partir de la ingesta registrada i la tendència del pes (regressió lineal).
+// days: [{ kcal }] dies amb el registre complet · weights: [{ t: dia (número), kg }]
+function adaptiveTDEE(days, weights) {
+  if (days.length < 10 || weights.length < 3) return null;
+  const t0 = weights[0].t, span = weights[weights.length - 1].t - t0;
+  if (span < 10) return null;
+  const n = weights.length, mx = weights.reduce((s, w) => s + w.t, 0) / n, my = weights.reduce((s, w) => s + w.kg, 0) / n;
+  const sxx = weights.reduce((s, w) => s + (w.t - mx) ** 2, 0), sxy = weights.reduce((s, w) => s + (w.t - mx) * (w.kg - my), 0);
+  const slope = sxy / sxx;                                   // kg per dia
+  const intake = days.reduce((s, d) => s + d.kcal, 0) / days.length;
+  const tdee = intake - slope * 7700;                        // 1 kg de teixit ≈ 7.700 kcal
+  const conf = Math.min(1, days.length / 21) * Math.min(1, span / 21) * 0.85;
+  return { tdee, intake, slope, days: days.length, span, conf };
 }
 
 // Objectiu concret d'un dia: el delta de kcal va als hidrats
@@ -311,5 +335,5 @@ function parseLabelText(text) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { wordsToNumbers, detectMealType, norm, tokens, searchFoods, parseMealText, parseChunk, splitMealText, toGrams, macrosFor, computeTargets, dayTarget, parseLabelText, GOALS, INTENSITY, NEAT };
+  module.exports = { adaptiveTDEE, wordsToNumbers, detectMealType, norm, tokens, searchFoods, parseMealText, parseChunk, splitMealText, toGrams, macrosFor, computeTargets, dayTarget, parseLabelText, GOALS, INTENSITY, NEAT };
 }

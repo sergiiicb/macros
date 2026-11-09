@@ -39,7 +39,7 @@ const KEY = "macros.v1";
 const DRAFT_KEY = "macros.draft";
 const DEFAULT = {
   profile: { name: "", sex: "m", age: "", height: "", weight: "", bodyFat: "", neat: "light", sessions: 4, hours: 1.5, intensity: "mod", goal: "maint", manualAdj: 0, theme: "auto", voiceLang: "ca-ES" },
-  foods: [], days: {}, weights: [],
+  foods: [], days: {}, weights: [], measures: [],
   gym: { templates: [], sessions: [], active: null, custom: [], alias: {}, rest: 120 },
 };
 const clone = o => JSON.parse(JSON.stringify(o));
@@ -140,9 +140,9 @@ const todayKey = () => keyOf(new Date());
 const parseKey = k => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d); };
 const addDays = (k, n) => { const d = parseKey(k); d.setDate(d.getDate() + n); return keyOf(d); };
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
-const fmtLong = k => cap(new Intl.DateTimeFormat("ca-ES", { weekday: "long", day: "numeric", month: "long" }).format(parseKey(k)));
-const fmtShort = k => new Intl.DateTimeFormat("ca-ES", { day: "numeric", month: "short" }).format(parseKey(k)).replace(".", "");
-const fmtDow = k => new Intl.DateTimeFormat("ca-ES", { weekday: "narrow" }).format(parseKey(k));
+const fmtLong = k => cap(new Intl.DateTimeFormat(LOC(), { weekday: "long", day: "numeric", month: "long" }).format(parseKey(k)));
+const fmtShort = k => new Intl.DateTimeFormat(LOC(), { day: "numeric", month: "short" }).format(parseKey(k)).replace(".", "");
+const fmtDow = k => new Intl.DateTimeFormat(LOC(), { weekday: "narrow" }).format(parseKey(k));
 const nowHM = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
 // ——————————————————— model ———————————————————
@@ -166,7 +166,39 @@ function dayTotals(d) {
   return t;
 }
 const mealTotals = m => dayTotals({ meals: [m] });
-const targets = () => computeTargets(S.profile);
+// Objectiu: fórmula + entrenos reals registrats + despesa real (ingesta i pes) quan hi ha prou dades
+let tgCache = { key: "", val: null };
+const dayNum = k => Math.round(parseKey(k).getTime() / 86400000);
+function trainFromLogs() {
+  if (S.profile.useLogs === false) return null;
+  const from = addDays(todayKey(), -27), L = S.gym.sessions.filter(s => s.date >= from && s.end);
+  if (L.length < 4) return null;
+  const days = new Set(L.map(s => s.date)).size;
+  const hrs = L.reduce((t, s) => t + clamp((s.end - s.start) / 3600000, 0.25, 3), 0) / L.length;
+  return { sessions: Math.round(days / 4 * 10) / 10, hours: Math.round(hrs * 100) / 100 };
+}
+function adaptiveFromLogs(base) {
+  if (S.profile.adaptive === false || !base) return null;
+  const today = todayKey(), days = [];
+  for (let i = 1; i <= 28; i++) {
+    const k = addDays(today, -i), d = S.days[k];
+    if (!d || !(d.meals || []).length) continue;
+    const kc = dayTotals(d).kcal;
+    if (kc >= base.kcal * 0.6) days.push({ kcal: kc });      // els dies a mig registrar no compten
+  }
+  const from = addDays(today, -35);
+  const ws = S.weights.filter(w => w.d >= from).sort((a, b) => a.d.localeCompare(b.d)).map(w => ({ t: dayNum(w.d), kg: +w.kg }));
+  return adaptiveTDEE(days, ws);
+}
+function targets() {
+  const key = (S.savedAt || 0) + todayKey();
+  if (tgCache.key === key) return tgCache.val;
+  const train = trainFromLogs() || undefined;
+  const base = computeTargets(S.profile, { train });
+  const val = base ? computeTargets(S.profile, { train, adaptive: adaptiveFromLogs(base) }) : null;
+  tgCache = { key, val };
+  return val;
+}
 function targetFor(k) {
   const t = targets();
   return t ? dayTarget(t, getDay(k).type || "normal", +S.profile.weight) : null;
@@ -180,6 +212,8 @@ const UI = {
   foodsSeg: "mine",
   foodsQ: "",
   statsRange: 7,
+  statsView: "me",
+  measure: "waist",
   draft: loadDraft(),
 };
 function loadDraft() {
@@ -548,7 +582,7 @@ function viewFoods() {
   }
   html += `<section class="card">${list.length ? list.map(f => `
     <div class="food" data-action="${mine ? "food-edit" : "food-copy"}" data-id="${f.id}">
-      <div class="thumb" ${mine ? `data-img="${f.id}"` : ""}>${esc(f.name.slice(0, 2).toUpperCase())}</div>
+      <div class="thumb" ${mine ? `data-img="${f.id}"` : ""}>${esc(tr(f.name).slice(0, 2).toUpperCase())}</div>
       <div class="grow"><div class="fname">${esc(f.name)}</div>
         <div class="fmac num">P ${fmt1(f.p)} · H ${fmt1(f.c)} · G ${fmt1(f.f)}${f.unitG ? ` · 1 u = ${fmt(f.unitG)} g` : ""}</div></div>
       <div class="fk num">${fmt(f.kcal)}<small>kcal/100 g</small></div>
@@ -923,8 +957,10 @@ function viewStats() {
   const wDays = rows.filter(r => r.water > 0);
   const avgW = wDays.length ? wDays.reduce((s, r) => s + r.water, 0) / wDays.length : 0;
 
-  let html = `<div class="seg" style="margin:6px 0 12px">${[7, 14, 30].map(v => `<button class="${n === v ? "on" : ""}" data-action="stats-range" data-v="${v}">${v} dies</button>`).join("")}</div>`;
-  if (!logged.length && !wDays.length) return html + `<section class="card"><div class="empty">Quan registris menjars, aquí veuràs l'evolució dia a dia.</div></section>`;
+  let html = `<div class="seg" style="margin:6px 0 12px">${[["me", "Jo"], ["friends", "Amics"]].map(([k, l]) => `<button class="${UI.statsView === k ? "on" : ""}" data-action="stats-view" data-v="${k}">${l}</button>`).join("")}</div>`;
+  if (UI.statsView === "friends") return html + viewFriends();
+  html += `<div class="seg" style="margin:0 0 12px">${[7, 14, 30].map(v => `<button class="${n === v ? "on" : ""}" data-action="stats-range" data-v="${v}">${v} dies</button>`).join("")}</div>`;
+  if (!logged.length && !wDays.length) return html + `<section class="card"><div class="empty">Quan registris menjars, aquí veuràs l'evolució dia a dia.</div></section>` + measuresCard();
 
   html += `<div class="kpis">
     <div class="kpi"><span>Mitjana diària</span><b class="num">${fmt(avgK)}</b><small>kcal${avgT ? ` · objectiu ${fmt(avgT)}` : ""}</small></div>
@@ -955,10 +991,67 @@ function viewStats() {
   const wpts = S.weights.filter(w => w.d >= keys[0]).sort((a, b) => a.d.localeCompare(b.d)).map(w => ({ d: w.d, v: +w.kg }));
   if (wpts.length >= 2) html += `<section class="card"><h2>Pes <span class="sub num">${r1(wpts[wpts.length - 1].v - wpts[0].v) > 0 ? "+" : ""}${fmt1(wpts[wpts.length - 1].v - wpts[0].v)} kg</span></h2>${lineChart(wpts)}</section>`;
 
+  html += measuresCard();
   html += `<section class="card"><h2>Detall</h2><div class="table-wrap"><table class="data num"><thead><tr><th>Dia</th><th>Kcal</th><th>%</th><th>P</th><th>H</th><th>G</th><th>Aigua</th></tr></thead><tbody>${
     [...rows].reverse().filter(r => r.logged || r.water).map(r => `<tr><td>${esc(fmtShort(r.k))}</td><td>${fmt(r.tot.kcal)}</td><td>${r.tg ? r0(r.tot.kcal / r.tg.kcal * 100) + "%" : "—"}</td><td>${r0(r.tot.p)}</td><td>${r0(r.tot.c)}</td><td>${r0(r.tot.f)}</td><td>${(r.water / 1000).toLocaleString("ca-ES", { maximumFractionDigits: 2 })}</td></tr>`).join("")
   }</tbody></table></div></section>`;
   return html;
+}
+
+// ——————————————————— MESURES CORPORALS ———————————————————
+const MEASURES = [["shoulders", "Espatlles"], ["chest", "Pectoral"], ["biceps", "Bíceps"], ["forearm", "Avantbraç"], ["waist", "Cintura"],
+  ["hip", "Maluc"], ["glutes", "Glutis"], ["thigh", "Quàdriceps"], ["calf", "Bessó"], ["neck", "Coll"], ["bf", "% greix"]];
+const mUnit = k => k === "bf" ? "%" : "cm";
+const measureLabel = k => (MEASURES.find(m => m[0] === k) || [k, k])[1];
+function measureSeries(k) { return S.measures.filter(m => m[k] != null && m[k] !== "").sort((a, b) => a.d.localeCompare(b.d)).map(m => ({ d: m.d, v: +m[k] })); }
+// Variació en els últims N dies: últim valor − valor de referència (l'últim d'abans del període, o el primer dins)
+function measureDelta(k, days) {
+  const ser = measureSeries(k); if (ser.length < 2) return null;
+  const last = ser[ser.length - 1];
+  if (!days) return last.v - ser[0].v;
+  const from = addDays(todayKey(), -days);
+  const before = ser.filter(p => p.d <= from), inside = ser.filter(p => p.d > from);
+  const ref = before.length ? before[before.length - 1] : inside[0];
+  return ref && ref !== last ? last.v - ref.v : null;
+}
+const sgn = (v, u) => v == null ? "—" : `${v > 0 ? "+" : v < 0 ? "−" : "±"}${fmt1(Math.abs(v))}${u ? " " + u : ""}`;
+function measuresCard() {
+  const have = MEASURES.filter(([k]) => measureSeries(k).length);
+  let html = `<section class="card"><h2>Mesures corporals <span class="sub"><button class="btn sm" data-action="m-open">${ICON.plus}Registra</button></span></h2>`;
+  if (!have.length) return html + `<div class="empty">Registra perímetres (bíceps, cintura, quàdriceps…) per veure'n l'evolució. Mesura sempre al mateix punt i a la mateixa hora.</div></section>`;
+  const cur = have.some(m => m[0] === UI.measure) ? UI.measure : have[0][0];
+  const ser = measureSeries(cur);
+  html += `<div class="seg chips-seg" style="margin-bottom:12px">${have.map(([k, l]) => `<button class="${k === cur ? "on" : ""}" data-action="m-pick" data-v="${k}">${l}</button>`).join("")}</div>`;
+  html += ser.length >= 2 ? gymLineChart(ser, mUnit(cur), 1, false) : `<div class="empty small">Calen 2 registres per dibuixar la gràfica.</div>`;
+  html += `<div class="table-wrap" style="margin-top:12px"><table class="data num"><thead><tr><th>Mesura</th><th>Actual</th><th>7 dies</th><th>30 dies</th><th>Total</th></tr></thead><tbody>${
+    have.map(([k, l]) => { const s2 = measureSeries(k), u = mUnit(k); return `<tr><td>${l}</td><td>${fmt1(s2[s2.length - 1].v)} ${u}</td><td>${sgn(measureDelta(k, 7))}</td><td>${sgn(measureDelta(k, 30))}</td><td>${sgn(measureDelta(k, 0))}</td></tr>`; }).join("")
+  }</tbody></table></div>
+  <button class="btn ghost block" data-action="m-hist" style="margin-top:8px">Veure tots els registres</button></section>`;
+  return html;
+}
+function openMeasureSheet(day) {
+  const d = day || todayKey(), cur = S.measures.find(m => m.d === d) || {};
+  const last = k => { const s2 = measureSeries(k); return s2.length ? fmt1(s2[s2.length - 1].v) : ""; };
+  openSheet("Mesures corporals", `
+    <label class="field"><span>Dia</span><input class="input" type="date" id="m-date" value="${d}" max="${todayKey()}"></label>
+    <p class="small muted" style="margin:-4px 0 12px">En gris, l'últim valor. Deixa en blanc el que no hagis mesurat.</p>
+    <div class="grid2">${MEASURES.map(([k, l]) => `<label class="field"><span>${l}</span><div class="unit-input"><input class="input num" type="number" inputmode="decimal" step="0.1" data-m="${k}" value="${cur[k] ?? ""}" placeholder="${last(k)}"><em>${mUnit(k)}</em></div></label>`).join("")}</div>
+    <button class="btn primary block" data-action="m-save">Desa</button>
+    ${cur.d ? `<button class="btn danger block" style="margin-top:8px" data-action="m-del" data-d="${cur.d}">Elimina aquest dia</button>` : ""}`);
+  $("#m-date").addEventListener("change", e => { closeSheet(); openMeasureSheet(e.target.value); });
+}
+function saveMeasures() {
+  const d = $("#m-date").value || todayKey(), rec = { d };
+  let n = 0;
+  $$("[data-m]").forEach(i => { const v = parseFloat(String(i.value).replace(",", ".")); if (v > 0 && v < 300) { rec[i.dataset.m] = v; n++; } });
+  S.measures = S.measures.filter(m => m.d !== d);
+  if (n) S.measures.push(rec);
+  if (rec.bf) S.profile.bodyFat = rec.bf;
+  save(); closeSheet(); render(); toast(n ? "Mesures desades" : "Registre buit eliminat");
+}
+function openMeasureHistory() {
+  const L = [...S.measures].sort((a, b) => b.d.localeCompare(a.d));
+  openSheet("Registres de mesures", L.map(m => `<div class="kv" role="button" data-action="m-edit" data-d="${m.d}"><span>${esc(fmtLong(m.d))}</span><b class="num small">${MEASURES.filter(([k]) => m[k] != null).map(([k, l]) => `${l} ${fmt1(m[k])}`).join(" · ")}</b></div>`).join("") || `<div class="empty">Cap registre.</div>`);
 }
 
 // ——————————————————— PERFIL ———————————————————
@@ -1015,9 +1108,11 @@ function viewProfile() {
       <div class="kv"><span>Obert com</span><b>${isStandalone() ? "App instal·lada" : inAppBrowser() ? "Navegador d'una altra app ⚠" : "Pestanya del navegador"}</b></div>
       <div class="kv"><span>Dades protegides contra esborrat</span><b>${STORE.persisted ? "Sí" : STORE.persisted === false ? "No" : "Desconegut"}</b></div>
       <div class="kv"><span>Còpies internes</span><b>${[STORE.lsOK ? "principal ✓" : "principal ✗", STORE.idbOK ? "reserva ✓" : STORE.idbOK === false ? "reserva ✗" : "reserva…"].join(" · ")}</b></div>
-      <div class="kv"><span>Últim desat</span><b class="num">${STORE.lastSave ? new Intl.DateTimeFormat("ca-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(STORE.lastSave)) : "—"}</b></div>
+      <div class="kv"><span>Últim desat</span><b class="num">${STORE.lastSave ? new Intl.DateTimeFormat(LOC(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(STORE.lastSave)) : "—"}</b></div>
       <div class="kv"><span>Guardat</span><b class="num">${Object.keys(S.days).length} dies · ${S.foods.length} aliments · ${S.gym.sessions.length} sessions</b></div>
     </div>
+    <label class="field"><span>Idioma de l'app</span><div class="seg">
+      ${[["ca", "Català"], ["es", "Castellano"]].map(([k, l]) => `<button class="${(p.lang || "ca") === k ? "on" : ""}" data-action="set-lang" data-v="${k}" data-nt>${l}</button>`).join("")}</div></label>
     <label class="field"><span>Idioma del dictat per veu</span><div class="seg">
       ${[["ca-ES", "Català"], ["es-ES", "Castellà"]].map(([k, l]) => `<button class="${(p.voiceLang || "ca-ES") === k ? "on" : ""}" data-action="set-p" data-field="voiceLang" data-v="${k}">${l}</button>`).join("")}</div></label>
     <label class="field"><span>Aparença</span><div class="seg">
@@ -1047,12 +1142,20 @@ function profileResult() {
     <div class="kv"><span>Metabolisme basal (${t.bmrMethod})</span><b class="num">${fmt(t.bmr)} kcal</b></div>
     <div class="kv"><span>Despesa d'un entreno</span><b class="num">≈ ${fmt(t.sessionKcal)} kcal</b></div>
     <div class="kv"><span>Despesa total (manteniment)</span><b class="num">${fmt(t.tdee)} kcal</b></div>
+    ${t.train.measured ? `<div class="kv"><span>Entrenos (dels teus registres, 4 setmanes)</span><b class="num">${fmt1(t.train.sessions)}/setmana · ${fmt1(t.train.hours)} h</b></div>` : ""}
+    ${t.adaptive ? `<div class="kv"><span>Despesa segons fórmula</span><b class="num">${fmt(t.tdeeFormula)} kcal</b></div>
+      <div class="kv"><span>Despesa real (${t.adaptive.days} dies, pes ${t.adaptive.slope >= 0 ? "+" : ""}${fmt1(t.adaptive.slope * 7)} kg/setmana)</span><b class="num">${fmt(t.adaptive.tdee)} kcal</b></div>
+      <p class="small faint" style="margin:6px 2px 0">La despesa que es fa servir barreja la fórmula i la real (${r0(t.adaptive.conf * 100)}% real). Com més dies registris sencers i més et pesis, més pes hi té la real.</p>`
+    : t.adaptiveRejected ? `<p class="small faint" style="margin:6px 2px 0">Les dades de les últimes setmanes donen una despesa massa diferent de la fórmula (potser hi ha dies sense registrar del tot): de moment no es fan servir.</p>`
+    : `<p class="small faint" style="margin:6px 2px 0">Quan portis 2-3 setmanes registrant tots els menjars i pesant-te 2-3 cops per setmana, el càlcul s'ajustarà amb la teva despesa real.</p>`}
     <div class="kv"><span>Aigua base</span><b class="num">${(water / 1000).toLocaleString("ca-ES")} L + 0,5 L/h d'entreno</b></div>
     <h3 class="view-title" style="margin:16px 0 6px">Segons l'avís del dia</h3>
     <div class="table-wrap"><table class="data num"><thead><tr><th>Avís</th><th>Ajust</th><th>Kcal</th><th>Hidrats</th></tr></thead><tbody>${
       Object.entries(t.dayTypes).map(([k, v]) => { const d = dayTarget(t, k, w); return `<tr><td>${esc(v.label)}</td><td>${v.pct >= 0 ? "+" : ""}${r0(v.pct * 100)}%</td><td>${fmt(d.kcal)}</td><td>${r0(d.c)} g</td></tr>`; }).join("")
     }</tbody></table></div>
-    <p class="small faint" style="margin:10px 2px 0">Els ajustos dels dies d'entreno i descans estan equilibrats perquè la mitjana setmanal quedi a l'objectiu. Proteïna i greix es mantenen; el que canvia són els hidrats.</p>`;
+    <p class="small faint" style="margin:10px 2px 0">Els ajustos dels dies d'entreno i descans estan equilibrats perquè la mitjana setmanal quedi a l'objectiu. Proteïna i greix es mantenen; el que canvia són els hidrats.</p>
+    <label class="ss-tog" style="margin-top:12px"><input type="checkbox" data-pchk="useLogs" ${S.profile.useLogs !== false ? "checked" : ""}> Fes servir els entrenos registrats (freqüència i durada reals)</label>
+    <label class="ss-tog" style="margin-top:8px"><input type="checkbox" data-pchk="adaptive" ${S.profile.adaptive !== false ? "checked" : ""}> Ajusta amb la despesa real (ingesta i evolució del pes)</label>`;
 }
 function exportData() {
   IDB.keys().then(async keys => {
@@ -1075,7 +1178,7 @@ async function importData(file) {
     const j = JSON.parse(await file.text());
     if (j.app !== "macros" || !j.data) throw new Error("format");
     if (!confirm("Importar la còpia? Substituirà totes les dades d'aquest dispositiu.")) return;
-    S = normalize(j.data);
+    S = normalize({ ...j.data, owner: S.owner });
     for (const [k, url] of Object.entries(j.images || {})) await IDB.put(k, await (await fetch(url)).blob());
     save(); applyTheme(); render();
     toast("Dades importades");
@@ -1173,6 +1276,16 @@ document.addEventListener("click", e => {
     case "cam-torch": toggleTorch(); break;
     case "ed-del": editorDelete(); break;
     case "stats-range": UI.statsRange = +a.dataset.v; render(); break;
+    case "stats-view": UI.statsView = a.dataset.v; render(); if (UI.statsView === "friends") friendsLoad(); break;
+    case "m-open": openMeasureSheet(); break;
+    case "m-save": saveMeasures(); break;
+    case "m-pick": UI.measure = a.dataset.v; render(); break;
+    case "m-del": if (confirm("Eliminar les mesures d'aquest dia?")) { S.measures = S.measures.filter(m => m.d !== a.dataset.d); save(); closeSheet(); render(); } break;
+    case "m-hist": openMeasureHistory(); break;
+    case "m-edit": closeSheet(); openMeasureSheet(a.dataset.d); break;
+    case "set-lang":
+      if ((S.profile.lang || "ca") !== a.dataset.v) { S.profile.lang = a.dataset.v; S.profile.voiceLang = a.dataset.v === "es" ? "es-ES" : "ca-ES"; save(); setTimeout(() => location.reload(), 300); }
+      break;
     case "set-p": S.profile[a.dataset.field] = a.dataset.v; save(); if (a.dataset.field === "theme") applyTheme(); render(); break;
     case "w-add": {
       const v = parseFloat(String($("#w-new").value).replace(",", "."));
@@ -1226,6 +1339,7 @@ document.addEventListener("input", e => {
 
 document.addEventListener("change", e => {
   const el = e.target;
+  if (el.dataset.pchk) { S.profile[el.dataset.pchk] = el.checked; save(); render(); return; }
   if (gymChange(e)) return;
   const act = el.dataset.action;
   if (act === "day-type") { ensureDay(UI.date).type = el.value; save(); render(); }
@@ -1274,5 +1388,6 @@ UI._lastToday = todayKey();
   render();
   recoverEditor();
   syncWakeLock();
+  i18nStart();
   syncInit();
 })();
