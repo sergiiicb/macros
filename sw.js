@@ -1,5 +1,5 @@
 // Service worker: l'app funciona sense connexió un cop oberta per primer cop.
-const VERSION = "macros-v9";
+const VERSION = "macros-v10";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "gym-db.js", "gym.js", "sync.js", "friends.js", "i18n.js", "firebase-config.js",
   "lib/firebase-app.js", "lib/firebase-auth.js", "lib/firebase-firestore-lite.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/badge-96.png", "sounds/bell.mp3", "icons/apple-touch-icon.png"];
@@ -16,7 +16,7 @@ self.addEventListener("fetch", e => {
   // Fitxers de l'app: xarxa primer (per rebre actualitzacions), memòria cau si no hi ha connexió
   if (url.origin === location.origin) {
     e.respondWith(
-      fetch(e.request).then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put(e.request, cp)); return r; })
+      fetch(e.request, { cache: "no-cache" }).then(r => { const cp = r.clone(); caches.open(VERSION).then(c => c.put(e.request, cp)); return r; })
         .catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match("index.html")))
     );
     return;
