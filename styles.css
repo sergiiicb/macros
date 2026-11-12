@@ -495,3 +495,9 @@ body:has(.rest-bar:not([hidden])) .toast { bottom: calc(var(--tabbar) + env(safe
 .sr-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
 .sr-bio { flex-basis: 100%; display: flex; gap: 12px; align-items: flex-start; background: var(--surface-2); border-radius: 12px; padding: 10px; }
 .sr-bio p { margin: 0; white-space: pre-wrap; }
+.post-foot { gap: 8px; }
+.cm-box { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.cm { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; }
+.cm-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+.cm .link-btn.del { padding: 0 4px; font-size: 18px; }
+.cm-new { margin-top: 6px; gap: 8px; }

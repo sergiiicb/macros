@@ -44,7 +44,14 @@ service cloud.firestore {
         allow read: if request.auth != null && (request.auth.uid == uid || request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends);
         allow create, delete: if request.auth != null && request.auth.uid == uid;
         allow update: if request.auth != null && (request.auth.uid == uid ||
-          (request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['kudos'])));
+          (request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['kudos', 'nc'])));
+        // Comentaris: els escriuen ell i els seus amics; els esborra qui l'ha escrit o l'autor de la publicació
+        match /comments/{cid} {
+          allow read: if request.auth != null && (request.auth.uid == uid || request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends);
+          allow create: if request.auth != null && request.resource.data.uid == request.auth.uid &&
+            (request.auth.uid == uid || request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends);
+          allow delete: if request.auth != null && (resource.data.uid == request.auth.uid || request.auth.uid == uid);
+        }
       }
     }
     // Sol·licituds d'amistat
@@ -84,7 +91,7 @@ A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que
 
 ## Amics, feed i classificació
 
-Pestanya **Amics**: **Feed** (els entrenaments que publiqueu tu i els teus amics, amb foto opcional i aplaudiments 👏), **Classificació** i **Amics** (afegir, acceptar sol·licituds). En acabar una sessió pots publicar-la amb una foto i un text; també des de l'historial (Publica / Treu del feed). A Perfil hi ha la foto de perfil i una biografia opcional.
+Pestanya **Amics**: **Feed** (els entrenaments que publiqueu tu i els teus amics, amb foto opcional, aplaudiments 👏 i comentaris 💬), **Classificació** i **Amics** (afegir, acceptar sol·licituds). En acabar una sessió pots publicar-la amb una foto i un text; també des de l'historial (Publica / Treu del feed). A Perfil hi ha la foto de perfil i una biografia opcional.
 
 Per afegir un amic, escriu el seu usuari o nom a Amics → Amics: mentre escrius surten els usuaris que més s'hi assemblen (encara que no l'escriguis exacte), amb el nom i la foto; toca'n un per veure'n la biografia. Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, mitjana de kcal, proteïna i aigua (només dels dies amb registre), dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
 

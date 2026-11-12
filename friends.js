@@ -109,8 +109,13 @@ async function pushPublicStats() {
   await FB.setDoc(pubRef(SYNC.uid), { user: SYNC.user, name, avatar, bio, stats, updated: FB.serverTimestamp() }, { merge: true });
   lastPubHash = h;
 }
-async function friendsLoad(force) {
-  if (SYNC.state !== "in" || FR.loading || (FR.loaded && !force)) return;
+function friendsLoad(force) {
+  if (SYNC.state !== "in") return Promise.resolve();
+  if (FR.loading) return FR.loadP;
+  if (FR.loaded && !force) return Promise.resolve();
+  return (FR.loadP = friendsLoadNow());
+}
+async function friendsLoadNow() {
   FR.loading = true; FR.err = null; frRender();
   try {
     const me = await FB.getDoc(pubRef(SYNC.uid));
@@ -217,7 +222,7 @@ function leaderboardHTML() {
     ${c.s ? `<p class="small muted" style="margin:0 0 8px">${c.l}</p>` : ""}`;
   if (c.ex) {
     const exs = new Map();
-    for (const pp of people) for (const [id, r] of Object.entries((pp.stats && pp.stats.ex) || {})) if (!exs.has(id)) exs.set(id, GYM_DB_MAP.has(id) || G().custom.some(x => x.id === id) ? exName(id) : r.n);
+    for (const pp of people) for (const [id, r] of Object.entries((pp.stats && pp.stats.ex) || {})) if (!exs.has(id)) exs.set(id, GYM_DB_MAP.has(id) || G().custom.some(x => x.id === id) ? exName(id) : postExName({ ex: id, n: r.n }));
     const list = [...exs.entries()].sort((a, b) => a[1].localeCompare(b[1], "ca"));
     if (!FR.ex || !exs.has(FR.ex)) FR.ex = list.length ? (list.find(([id]) => people.filter(pp => pp.stats && pp.stats.ex && pp.stats.ex[id]).length > 1) || list[0])[0] : null;
     html += `<label class="field"><span>Exercici</span><select class="input" data-fr-sel="ex" data-nt>${list.map(([id, n]) => `<option value="${esc(id)}" ${id === FR.ex ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></label>`;
@@ -270,8 +275,8 @@ function postFromSession(s, photo, caption) {
   const st = sessionStats(s);
   return {
     uid: SYNC.uid, user: SYNC.user, date: s.date, start: s.start, title: s.name, dur: st.dur, sets: st.sets, vol: Math.round(st.vol),
-    prs: (s.prs || []).map(p => ({ n: exName(p.ex), t: p.t, v: Math.round(p.v * 10) / 10 })),
-    items: s.items.map(it => { const k = exById(it.ex).kind; const ws = it.sets.filter(x => x.done && isWork(x)); return { n: exName(it.ex), s: (ws.length ? ws : it.sets.filter(x => x.done)).map(x => setText(x, k)).join(" · ") }; }),
+    prs: (s.prs || []).map(p => ({ ex: p.ex, n: exName(p.ex), t: p.t, v: Math.round(p.v * 10) / 10 })),
+    items: s.items.map(it => { const k = exById(it.ex).kind; const ws = it.sets.filter(x => x.done && isWork(x)); return { ex: it.ex, n: exName(it.ex), s: (ws.length ? ws : it.sets.filter(x => x.done)).map(x => setText(x, k)).join(" · ") }; }),
     caption: caption || "", photo: photo || null,
   };
 }
@@ -319,7 +324,37 @@ async function feedKudos(uid, id) {
   try { await FB.updateDoc(postRef(uid, id), { kudos: has ? FB.arrayRemove(SYNC.uid) : FB.arrayUnion(SYNC.uid) }); }
   catch (e) { console.warn(e); toast("No s'ha pogut fer"); }
 }
-function timeAgo(ms) {
+// Noms del feed a l'idioma de qui ho mira (els exercicis de la base de dades i els de la rutina carregada)
+const SEED_CA = { c_espatlla3d: "Espatlla 3 direccions (laterals, frontals, manguito)", c_canvisritme: "Canvis de ritme",
+  c_coreJ: "Circuit de core J (isomètric)", c_coreE: "Circuit de core E (plegades)", c_avantbrac3d: "Avantbraç 3 direccions", c_quartesquat: "Quart d'esquat explosiu" };
+let NAME_TO_ID = null;
+function exIdFromName(n) {
+  if (!NAME_TO_ID) {
+    NAME_TO_ID = new Map();
+    for (const e of GYM_DB) { if (e.ca) NAME_TO_ID.set(norm(e.ca), e.id); NAME_TO_ID.set(norm(e.en), e.id); }
+    for (const [id, n2] of Object.entries(ES_EX)) NAME_TO_ID.set(norm(n2), id);
+    for (const [id, n2] of Object.entries(SEED_CA)) NAME_TO_ID.set(norm(n2), id);
+  }
+  return NAME_TO_ID.get(norm(n || ""));
+}
+function postExName(x) {
+  const id = x.ex || exIdFromName(x.n);
+  if (id) {
+    if (LANG() === "es" && ES_EX[id]) return ES_EX[id];
+    const e = GYM_DB_MAP.get(id);
+    if (e) return e.ca || e.en;
+    if (SEED_CA[id]) return SEED_CA[id];
+  }
+  return x.n;
+}
+let ES_REV = null;
+function postTitle(t) {
+  if (LANG() === "es") return ES_DICT[t] || t;
+  ES_REV ||= new Map(Object.entries(ES_DICT).map(([k, v]) => [v, k]));
+  return ES_REV.get(t) || t;
+}
+function timeAgo(ms) { return tr(timeAgoCa(ms)); }
+function timeAgoCa(ms) {
   const m = Math.round((Date.now() - ms) / 60000);
   if (m < 60) return m <= 1 ? "ara mateix" : `fa ${m} min`;
   const h = Math.round(m / 60); if (h < 24) return `fa ${h} h`;
@@ -335,14 +370,16 @@ function viewFeed() {
     const k = p.kudos || [], mine = k.includes(SYNC.uid);
     return `<article class="card post">
       <div class="post-head" data-nt>${avatarHTML(p.who, 42)}<div class="grow"><b>${esc(p.who.user)}</b>${p.who.name ? ` <span class="faint">${esc(p.who.name)}</span>` : ""}<div class="small muted">${esc(timeAgo(p.start || Date.now()))}</div></div></div>
-      <h3 class="post-title" data-nt>${esc(p.title)}</h3>
+      <h3 class="post-title" data-nt>${esc(postTitle(p.title))}</h3>
       ${p.caption ? `<p class="post-cap" data-nt>${esc(p.caption)}</p>` : ""}
       <div class="post-stats"><div><span>Durada</span><b class="num">${fmtDur(p.dur)}</b></div><div><span>Sèries</span><b class="num">${p.sets}</b></div><div><span>Volum</span><b class="num">${fmt(p.vol)} kg</b></div>${(p.prs || []).length ? `<div><span>Rècords</span><b class="num">🏆 ${p.prs.length}</b></div>` : ""}</div>
       ${p.photo ? `<img class="post-photo" src="${esc(p.photo)}" alt="" loading="lazy">` : ""}
-      <div class="post-ex">${items.map(it => `<div><span data-nt>${esc(it.n)}</span><b class="num">${esc(it.s)}</b></div>`).join("")}
+      <div class="post-ex">${items.map(it => `<div><span data-nt>${esc(postExName(it))}</span><b class="num">${esc(it.s)}</b></div>`).join("")}
         ${p.items.length > 4 ? `<button class="link-btn" data-fr="open" data-id="${esc(key)}">${open ? "Mostra'n menys" : `Mostra'ls tots (${p.items.length})`}</button>` : ""}</div>
-      ${(p.prs || []).length ? `<div class="post-prs">${p.prs.map(r => `<span>🏆 <span data-nt>${esc(r.n)}</span> · ${PR_LABEL[r.t]} ${r.t === "vol" ? fmt(r.v) : fmt1(r.v)} kg</span>`).join("")}</div>` : ""}
-      <div class="post-foot"><button class="kudos ${mine ? "on" : ""}" data-fr="kudos" data-uid="${esc(p.uid)}" data-id="${esc(p.id)}">👏 <span class="num">${k.length || ""}</span></button></div>
+      ${(p.prs || []).length ? `<div class="post-prs">${p.prs.map(r => `<span>🏆 <span data-nt>${esc(postExName(r))}</span> · ${PR_LABEL[r.t]} ${r.t === "vol" ? fmt(r.v) : fmt1(r.v)} kg</span>`).join("")}</div>` : ""}
+      <div class="post-foot"><button class="kudos ${mine ? "on" : ""}" data-fr="kudos" data-uid="${esc(p.uid)}" data-id="${esc(p.id)}">👏 <span class="num">${k.length || ""}</span></button>
+        <button class="kudos" data-fr="cm-toggle" data-key="${esc(key)}">💬 <span class="num">${p.nc > 0 ? p.nc : ""}</span></button></div>
+      ${FR.cmOpen[key] ? commentsHTML(p, key) : ""}
     </article>`;
   }).join("");
   html += `<div class="grid2"><button class="btn" data-fr="feed-reload">${FR.feedLoading ? "Carregant…" : "Actualitza"}</button><button class="btn" data-fr="more">Carrega'n més</button></div>`;
@@ -453,3 +490,70 @@ document.addEventListener("click", e => {
   if (a.dataset.fr === "sr-open") { FR.openRes = FR.openRes === a.dataset.uid ? null : a.dataset.uid; refreshSearch(); }
   else if (a.dataset.fr === "add-uid") { a.disabled = true; friendAdd(a.dataset.user, a.dataset.uid); }
 });
+
+// ——— comentaris: pub/{autor}/posts/{id}/comments ———
+FR.cmOpen = {}; FR.cm = {}; FR.cmLoading = {}; FR.cmDraft = {};
+const cmCol = (uid, id) => FB.collection(FB.db, "pub", uid, "posts", id, "comments");
+async function commentsLoad(p, key) {
+  FR.cmLoading[key] = true; frRender();
+  try {
+    const q = await FB.getDocs(FB.query(cmCol(p.uid, p.id), FB.orderBy("ts", "asc"), FB.limit(100)));
+    const L = []; q.forEach(d => L.push({ id: d.id, ...d.data() }));
+    FR.cm[key] = L;
+  } catch (e) { console.warn(e); FR.cm[key] = FR.cm[key] || []; toast("No s'han pogut carregar els comentaris"); }
+  FR.cmLoading[key] = false; frRender();
+}
+function commentsHTML(p, key) {
+  const L = FR.cm[key];
+  const who = uid => uid === SYNC.uid ? { user: SYNC.user, name: S.profile.name, avatar: S.profile.avatar } : (FR.friends.find(f => f.uid === uid) || null);
+  let html = `<div class="cm-box">`;
+  if (!L) html += `<p class="small faint">${FR.cmLoading[key] ? "Carregant…" : ""}</p>`;
+  else if (!L.length) html += `<p class="small faint" style="margin:4px 0 8px">Encara no hi ha comentaris.</p>`;
+  else html += L.map(c => {
+    const w = who(c.uid) || { user: c.user };
+    const canDel = c.uid === SYNC.uid || p.uid === SYNC.uid;
+    return `<div class="cm" data-nt>${avatarHTML(w, 30)}<div class="grow"><div><b>${esc(c.user || w.user)}</b> <span class="small faint">${c.ts && c.ts.toMillis ? esc(timeAgo(c.ts.toMillis())) : ""}</span></div><div class="cm-text">${esc(c.text)}</div></div>
+      ${canDel ? `<button class="link-btn del" data-fr="cm-del" data-key="${esc(key)}" data-cid="${esc(c.id)}" aria-label="Elimina">×</button>` : ""}</div>`;
+  }).join("");
+  html += `<div class="row cm-new"><input class="input grow" id="cm-in-${esc(key)}" data-cm-key="${esc(key)}" maxlength="500" placeholder="Escriu un comentari…" autocomplete="off" value="${esc(FR.cmDraft[key] || "")}">
+    <button class="btn primary sm" data-fr="cm-send" data-key="${esc(key)}">Envia</button></div></div>`;
+  return html;
+}
+const postByKey = key => FR.feed.find(p => p.uid + "_" + p.id === key);
+async function commentSend(key) {
+  const p = postByKey(key), inp = document.getElementById("cm-in-" + key);
+  const text = inp ? inp.value.trim() : "";
+  if (!p || !text) return;
+  inp.disabled = true;
+  try {
+    const ref = FB.doc(cmCol(p.uid, p.id));
+    await FB.setDoc(ref, { uid: SYNC.uid, user: SYNC.user, text, ts: FB.serverTimestamp() });
+    try { await FB.updateDoc(postRef(p.uid, p.id), { nc: FB.increment(1) }); } catch (e) { console.warn(e); }
+    p.nc = (p.nc || 0) + 1; FR.cmDraft[key] = "";
+    (FR.cm[key] ||= []).push({ id: ref.id, uid: SYNC.uid, user: SYNC.user, text, ts: { toMillis: () => Date.now() } });
+    frRender();
+    const again = document.getElementById("cm-in-" + key); if (again) again.focus();
+  } catch (e) { console.error(e); toast("No s'ha pogut enviar"); if (inp) inp.disabled = false; }
+}
+async function commentDel(key, cid) {
+  const p = postByKey(key); if (!p || !confirm("Eliminar el comentari?")) return;
+  try {
+    await FB.deleteDoc(FB.doc(FB.db, "pub", p.uid, "posts", p.id, "comments", cid));
+    try { await FB.updateDoc(postRef(p.uid, p.id), { nc: FB.increment(-1) }); } catch (e) { console.warn(e); }
+    p.nc = Math.max(0, (p.nc || 1) - 1);
+    FR.cm[key] = (FR.cm[key] || []).filter(c => c.id !== cid);
+    frRender();
+  } catch (e) { console.error(e); toast("No s'ha pogut eliminar"); }
+}
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-fr]"); if (!a) return;
+  const k = a.dataset.fr, key = a.dataset.key;
+  if (k === "cm-toggle") {
+    FR.cmOpen[key] = !FR.cmOpen[key];
+    frRender();
+    if (FR.cmOpen[key]) { const p = postByKey(key); if (p) commentsLoad(p, key); }
+  } else if (k === "cm-send") commentSend(key);
+  else if (k === "cm-del") commentDel(key, a.dataset.cid);
+});
+document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.dataset && e.target.dataset.cmKey) { e.preventDefault(); commentSend(e.target.dataset.cmKey); } });
+document.addEventListener("input", e => { if (e.target.dataset && e.target.dataset.cmKey) FR.cmDraft[e.target.dataset.cmKey] = e.target.value; });
