@@ -1,8 +1,8 @@
 // Service worker: l'app funciona sense connexió un cop oberta per primer cop.
-const VERSION = "macros-v8";
+const VERSION = "macros-v9";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "gym-db.js", "gym.js", "sync.js", "friends.js", "i18n.js", "firebase-config.js",
   "lib/firebase-app.js", "lib/firebase-auth.js", "lib/firebase-firestore-lite.js", "manifest.webmanifest",
-  "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
+  "icons/icon-192.png", "icons/icon-512.png", "icons/badge-96.png", "sounds/bell.mp3", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -42,4 +42,13 @@ self.addEventListener("fetch", e => {
       return r;
     }));
   }
+});
+
+// Tocar la notificació de l'entreno torna a obrir l'app
+self.addEventListener("notificationclick", e => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(cs => {
+    for (const c of cs) if ("focus" in c) return c.focus();
+    return self.clients.openWindow((e.notification.data && e.notification.data.url) || "./");
+  }));
 });

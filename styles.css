@@ -456,3 +456,35 @@ body:has(.rest-bar:not([hidden])) .toast { bottom: calc(var(--tabbar) + env(safe
 .lb-pos { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 750; font-size: 13px; background: var(--surface-2); color: var(--muted); flex: none; }
 .lb-pos.p1 { background: #e8b923; color: #3b2d00; } .lb-pos.p2 { background: #b9c0c8; color: #20262c; } .lb-pos.p3 { background: #c98a52; color: #2e1a08; }
 .lb-row b.num { font-size: 15px; }
+/* navegació */
+.diet-seg { margin: 6px 0 12px; }
+.tabbar button span { font-size: 11px; }
+.dot-n { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 11px; font-weight: 750; margin-left: 4px; }
+.tabbar button.badge::after { content: ""; position: absolute; top: 9px; left: calc(50% + 9px); width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--surface); }
+/* avatars */
+.av { border-radius: 50%; object-fit: cover; flex: none; display: inline-grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 750; }
+.av-pick { position: relative; cursor: pointer; flex: none; }
+.av-edit { position: absolute; right: -2px; bottom: -2px; width: 28px; height: 28px; border-radius: 50%; background: var(--surface); border: 1px solid var(--border); display: grid; place-items: center; }
+.av-edit svg { width: 16px; height: 16px; stroke: var(--text); fill: none; stroke-width: 2; }
+.fr-row .row { gap: 10px; align-items: center; }
+.lb-row .av { margin-right: -2px; }
+/* feed */
+.post { padding: 14px; }
+.post-head { display: flex; align-items: center; gap: 10px; }
+.post-title { margin: 10px 0 2px; font-size: 18px; letter-spacing: -0.01em; }
+.post-cap { margin: 4px 0 0; white-space: pre-wrap; }
+.post-stats { display: flex; gap: 18px; margin: 10px 0; }
+.post-stats span { display: block; font-size: 11.5px; color: var(--muted); }
+.post-stats b { font-size: 16px; }
+.post-photo { width: calc(100% + 28px); margin: 4px -14px 10px; max-height: 520px; object-fit: cover; display: block; }
+.post-ex > div { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); font-size: 13.5px; }
+.post-ex > div:first-child { border-top: 0; }
+.post-ex b { font-weight: 600; text-align: right; color: var(--muted); }
+.post-ex .link-btn { margin-top: 6px; }
+.post-prs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.post-prs > span { font-size: 12.5px; background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-radius: 8px; padding: 3px 8px; font-weight: 600; }
+.post-foot { display: flex; margin-top: 10px; }
+.kudos { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 6px 14px; font-size: 15px; }
+.kudos.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 700; }
+.photo-pick { display: grid; place-items: center; gap: 6px; border: 1.5px dashed var(--border); border-radius: 14px; padding: 16px; cursor: pointer; color: var(--muted); text-align: center; }
+.photo-pick img { max-width: 100%; max-height: 260px; border-radius: 10px; }

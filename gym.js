@@ -347,24 +347,98 @@ function refreshSetRow(i, j) {
 }
 
 // ——————————————————— temporitzador de descans ———————————————————
-let audioCtx = null;
-function beep() {
+// ——— timbre del descans ———
+// En primer pla sona amb un <audio> curt (< 5 s): a Android la música es baixa una estona en lloc d'aturar-se.
+// Com a reserva, quan comença el descans es programa el mateix timbre amb Web Audio 1,2 s després del final:
+// si el mòbil congela l'app (pantalla bloquejada), sona igualment; si l'app és viva, es cancel·la.
+const BELL_URL = "sounds/bell.mp3";
+let audioCtx = null, bellEl = null, bellBuf = null, bellFallback = null;
+function audioUnlock() {
+  try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (e) {}
+  try { if (!bellEl) { bellEl = new Audio(BELL_URL); bellEl.preload = "auto"; } } catch (e) {}
+  if (!bellBuf && audioCtx) fetch(BELL_URL).then(r => r.arrayBuffer()).then(b => audioCtx.decodeAudioData(b)).then(d => { bellBuf = d; const t = G().active && G().active.timer; if (t && !t.fired) scheduleFallbackBell(t.end); }).catch(() => {});
+}
+const bellOn = () => S.profile.bell !== false;
+function cancelFallbackBell() {
+  if (!bellFallback) return;
+  try { bellFallback.src.stop(); } catch (e) {}
+  try { bellFallback.g.disconnect(); } catch (e) {}
+  bellFallback = null;
+}
+function scheduleFallbackBell(endMs) {
+  cancelFallbackBell();
+  if (!bellOn() || !audioCtx || !bellBuf) return;
   try {
-    audioCtx ||= new (window.AudioContext || window.webkitAudioContext)();
-    const t0 = audioCtx.currentTime;
-    [0, 0.25, 0.5].forEach(d => {
-      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-      o.frequency.value = d === 0.5 ? 1175 : 880; o.connect(g); g.connect(audioCtx.destination);
-      g.gain.setValueAtTime(0.0001, t0 + d); g.gain.exponentialRampToValueAtTime(0.35, t0 + d + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + d + 0.18);
-      o.start(t0 + d); o.stop(t0 + d + 0.2);
+    const src = audioCtx.createBufferSource(), g = audioCtx.createGain();
+    src.buffer = bellBuf; g.gain.value = 0.9; src.connect(g); g.connect(audioCtx.destination);
+    src.start(audioCtx.currentTime + Math.max(0.05, (endMs - Date.now()) / 1000 + 1.2));
+    bellFallback = { src, g, at: endMs + 1200 };
+  } catch (e) { bellFallback = null; }
+}
+function playBell() {
+  if (!bellOn()) return;
+  try { if (!bellEl) bellEl = new Audio(BELL_URL); bellEl.currentTime = 0; const p = bellEl.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+// Al final del descans: si l'app és viva abans de la reserva, la cancel·la i fa sonar el timbre normal
+function ringRestEnd() {
+  const early = bellFallback && Date.now() < bellFallback.at - 150;
+  if (bellFallback && !early) return "fallback";          // la reserva ja ha sonat o està sonant
+  cancelFallbackBell();
+  if (document.visibilityState === "visible" || !notiOK()) { playBell(); return "bell"; }
+  return "noti";                                          // amb l'app tancada: so de la notificació (també baixa la música)
+}
+
+// ——— notificació de la sessió (fora de l'app) ———
+const NOTI_TAG = "record-session";
+const notiOK = () => "Notification" in window && Notification.permission === "granted" && "serviceWorker" in navigator;
+function askNotiPermission() {
+  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch (e) {}
+}
+function nextUp(a) {
+  // Primer, el que queda de l'exercici que estàs fent; després els següents; al final, els que t'has saltat
+  const n = a.items.length, from = Math.min(Math.max(0, a.lastI || 0), Math.max(0, n - 1));
+  for (let o = 0; o < n; o++) {
+    const it = a.items[(from + o) % n];
+    const j = it.sets.findIndex(x => !x.done);
+    if (j < 0) continue;
+    const x = it.sets[j], k = exById(it.ex).kind, pv = prevPlaceholders(it, a.id).rows[j];
+    let t = `${exName(it.ex)} · ${tr("sèrie")} ${j + 1}/${it.sets.length}`;
+    if (x.goal) t += ` · ${x.goal}${k === "t" ? "" : " rep"}`;
+    if (pv && (pv.w || pv.reps || pv.time)) t += ` · ${tr("anterior")} ${setText(pv, k)}`;
+    return t;
+  }
+  return null;
+}
+let notiLast = 0;
+async function showSessionNoti(ring) {
+  if (!notiOK()) return;
+  const a = G().active; if (!a) return;
+  const now = Date.now();
+  if (!ring && now - notiLast < 950) return;
+  notiLast = now;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration(); if (!reg) return;
+    const t = a.timer, nu = nextUp(a), hhmm = d => new Date(d).toLocaleTimeString(LOC(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    let title;
+    if (t && t.end > now) title = `${tr("Descans")} ${fmtClock(t.end - now)} · ${tr("fins a les")} ${hhmm(t.end)}`;
+    else if (t) title = tr("Descans acabat");
+    else title = `${tr("Entrenament en curs")} · ${fmtClock(now - a.start)}`;
+    await reg.showNotification(title, {
+      body: nu ? `${tr("Següent:")} ${nu}` : tr("Tots els exercicis fets"),
+      tag: NOTI_TAG, icon: "icons/icon-192.png", badge: "icons/badge-96.png",
+      silent: !ring, renotify: !!ring, vibrate: ring ? [250, 120, 250, 120, 400] : undefined, data: { url: location.href.split("#")[0] },
     });
   } catch (e) {}
+}
+async function closeSessionNoti() {
+  try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) (await reg.getNotifications({ tag: NOTI_TAG })).forEach(n => n.close()); } catch (e) {}
 }
 function startRest(sec, label) {
   const a = G().active;
   if (!a || !sec) return;
-  try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (e) {}
+  audioUnlock();
   a.timer = { end: Date.now() + sec * 1000, total: sec, label };
+  scheduleFallbackBell(a.timer.end);
   gymSave();
   updateTimerBar();
 }
@@ -388,8 +462,9 @@ function updateTimerBar() {
     <button class="btn sm primary" data-g="rest-skip">${done ? "D'acord" : "Salta"}</button></div>`;
   if (done && !t.fired) {
     t.fired = true; gymSave();
-    beep();
+    const how = ringRestEnd();
     try { navigator.vibrate && navigator.vibrate([250, 120, 250, 120, 400]); } catch (e) {}
+    if (document.visibilityState !== "visible") showSessionNoti(how === "noti");
   }
 }
 function gymReady() { try { return !!(S && S.gym); } catch (e) { return false; } }
@@ -397,6 +472,7 @@ setInterval(() => {
   if (!gymReady()) return;
   if (G().active && G().active.timer) updateTimerBar();
   const el = $("#gym-elapsed"); if (el && G().active) el.textContent = fmtClock(Date.now() - G().active.start);
+  if (G().active && document.visibilityState !== "visible") showSessionNoti(false);
 }, 250);
 
 // Pantalla sempre encesa durant la sessió
@@ -408,7 +484,11 @@ async function syncWakeLock() {
     else if (!want && wakeLock) { await wakeLock.release(); wakeLock = null; }
   } catch (e) { wakeLock = null; }
 }
-document.addEventListener("visibilitychange", () => { if (gymReady()) { syncWakeLock(); updateTimerBar(); } });
+document.addEventListener("visibilitychange", () => {
+  if (!gymReady()) return;
+  syncWakeLock(); updateTimerBar();
+  if (document.visibilityState === "visible") closeSessionNoti(); else showSessionNoti(false);
+});
 
 // ——————————————————— fi de sessió ———————————————————
 function cleanSession(s) {
@@ -426,6 +506,7 @@ function finishSession() {
   const s = cleanSession(a);
   const prs = s.prs = sessionPRs(s);
   s.end = Date.now(); delete s.timer; delete s.upd;
+  cancelFallbackBell(); closeSessionNoti();
   if (!s.items.length) { G().active = null; save(); syncWakeLock(); render(); toast("Sessió buida: no s'ha desat"); return; }
   const sameDay = G().sessions.filter(x => x.date === s.date).length;
   G().sessions.push(s);
@@ -446,6 +527,23 @@ function sessionStats(s) {
 function prList(prs) {
   return prs.map(p => `<div class="kv"><span><span data-nt>${esc(exName(p.ex))}</span> · ${PR_LABEL[p.t]}</span><b class="num">${p.t === "vol" ? fmt(p.v) : fmt1(p.v)} kg <small class="faint">(abans ${p.t === "vol" ? fmt(p.prev) : fmt1(p.prev)})</small></b></div>`).join("");
 }
+// ——— publicar al feed dels amics ———
+function publishFormHTML(s) {
+  GU.postPhoto = null;
+  return `<section class="card"><h2>Comparteix-ho amb els amics</h2>
+    <label class="photo-pick" id="post-pick"><input type="file" accept="image/*" id="post-file" hidden><span>📷 Afegeix una foto (opcional)</span></label>
+    <textarea class="input" id="post-cap" maxlength="280" placeholder="Com ha anat? (opcional)" style="margin-top:10px"></textarea>
+    <div class="grid2" style="margin-top:10px"><button class="btn" data-action="sheet-close">Ara no</button><button class="btn primary" data-g="post-publish" data-id="${s.id}">Publica</button></div>
+    <p class="small faint" style="margin:8px 0 0">Només ho veuen els teus amics: exercicis, sèries, pesos i rècords.</p></section>`;
+}
+function openPublishSheet(s) { openSheet("Publica l'entrenament", publishFormHTML(s)); }
+document.addEventListener("change", async e => {
+  if (e.target.id !== "post-file" || !e.target.files[0]) return;
+  try {
+    GU.postPhoto = await compressImage(e.target.files[0], 1080, 0.72, 600000);
+    $("#post-pick").innerHTML = `<input type="file" accept="image/*" id="post-file" hidden><img src="${GU.postPhoto}" alt=""><span class="small">Toca per canviar-la</span>`;
+  } catch (err) { toast("No s'ha pogut obrir la imatge"); }
+});
 function showSessionSummary(s, prs, newType) {
   const st = sessionStats(s);
   openSheet("Sessió desada", `
@@ -456,7 +554,7 @@ function showSessionSummary(s, prs, newType) {
     </div>
     ${prs.length ? `<section class="card"><h2>🏆 Rècords nous <span class="sub">${prs.length}</span></h2>${prList(prs)}</section>` : ""}
     ${newType ? `<p class="small muted">He posat l'avís del dia a <b>${newType === "double" ? "Entreno doble" : "Entreno"}</b> perquè l'objectiu de macros d'avui ho tingui en compte.</p>` : ""}
-    <button class="btn primary block" data-action="sheet-close">D'acord</button>`);
+    ${SYNC.state === "in" ? publishFormHTML(s) : `<button class="btn primary block" data-action="sheet-close">D'acord</button>`}`);
 }
 
 // ——————————————————— HISTORIAL ———————————————————
@@ -495,6 +593,7 @@ function openSessionDetail(id) {
     ${(s.prs || []).length ? `<section class="card" style="margin-top:12px"><h2>🏆 Rècords</h2>${prList(s.prs)}</section>` : ""}
     ${s.note ? `<p class="small" style="white-space:pre-wrap">${esc(s.note)}</p>` : ""}
     <div class="grid2" style="margin-top:12px"><button class="btn" data-g="sess-edit" data-id="${s.id}">Edita</button><button class="btn" data-g="sess-to-tpl" data-id="${s.id}">Desa com a plantilla</button></div>
+    ${SYNC.state === "in" ? (s.posted ? `<button class="btn block" style="margin-top:8px" data-g="post-remove" data-id="${s.id}">Treu del feed</button>` : `<button class="btn block" style="margin-top:8px" data-g="post-open" data-id="${s.id}">Publica al feed dels amics</button>`) : ""}
     <button class="btn danger block" style="margin-top:8px" data-g="sess-del" data-id="${s.id}">Elimina la sessió</button>`);
 }
 
@@ -855,6 +954,7 @@ function gymClick(e) {
       if (G().active) { toast("Ja tens una sessió en curs"); break; }
       const t = g === "start-tpl" ? G().templates.find(x => x.id === a.dataset.id) : null;
       G().active = sessionFromTemplate(t); GU.view = "train";
+      audioUnlock(); askNotiPermission();
       save(); syncWakeLock(); render(); window.scrollTo({ top: 0 });
       if (!t) openPicker("session");
       break;
@@ -868,6 +968,8 @@ function gymClick(e) {
     case "set-done": {
       const i = +si.dataset.si, j = +sj.dataset.sj, it = s.items[i], x = it.sets[j];
       x.done = !x.done;
+      if (x.done) s.lastI = i;
+      audioUnlock();
       if (x.done) {
         const pv = prevPlaceholders(it, s.id).rows[j];
         if (pv) { if (x.w === "") x.w = pv.w ?? ""; if (x.reps === "") x.reps = pv.reps ?? ""; if (x.time === "") x.time = pv.time ?? ""; }
@@ -883,10 +985,10 @@ function gymClick(e) {
       gymSave(true); render(); break;
     }
     case "ss-rm-last": { const it = s.items[+si.dataset.si]; it.sets.pop(); gymSave(true); render(); break; }
-    case "rest-add": { const t = G().active && G().active.timer; if (t) { t.end += +a.dataset.v * 1000; t.total = Math.max(1, t.total + +a.dataset.v); t.fired = false; gymSave(); updateTimerBar(); } break; }
-    case "rest-skip": if (G().active) { G().active.timer = null; gymSave(); updateTimerBar(); } break;
+    case "rest-add": { const t = G().active && G().active.timer; if (t) { t.end += +a.dataset.v * 1000; t.total = Math.max(1, t.total + +a.dataset.v); t.fired = false; scheduleFallbackBell(t.end); gymSave(); updateTimerBar(); } break; }
+    case "rest-skip": if (G().active) { G().active.timer = null; cancelFallbackBell(); gymSave(); updateTimerBar(); } break;
     case "sess-finish": finishSession(); break;
-    case "sess-discard": if (confirm("Descartar la sessió? No es desarà res.")) { G().active = null; save(); syncWakeLock(); updateTimerBar(); render(); } break;
+    case "sess-discard": if (confirm("Descartar la sessió? No es desarà res.")) { G().active = null; cancelFallbackBell(); closeSessionNoti(); save(); syncWakeLock(); updateTimerBar(); render(); } break;
     // menú d'exercici
     case "im": {
       const k = a.dataset.k, i = +a.dataset.i, list = k === "tpl" ? GU.tpl.items : s.items;
@@ -901,7 +1003,16 @@ function gymClick(e) {
     }
     // historial
     case "sess-open": openSessionDetail(a.dataset.id); break;
-    case "sess-del": if (confirm("Eliminar aquesta sessió de l'historial?")) { G().sessions = G().sessions.filter(x => x.id !== a.dataset.id); save(); closeSheet(); render(); toast("Sessió eliminada"); } break;
+    case "sess-del": if (confirm("Eliminar aquesta sessió de l'historial?")) { const ds = G().sessions.find(x => x.id === a.dataset.id); if (ds && ds.posted) unpublishSession(ds); G().sessions = G().sessions.filter(x => x.id !== a.dataset.id); save(); closeSheet(); render(); toast("Sessió eliminada"); } break;
+    case "post-publish": {
+      const ps = G().sessions.find(x => x.id === a.dataset.id); if (!ps) break;
+      a.disabled = true; a.textContent = tr("Publicant…");
+      publishSession(ps, GU.postPhoto, ($("#post-cap") || {}).value || "").then(() => { closeSheet(); toast("Publicat al feed dels amics"); })
+        .catch(err => { console.error(err); a.disabled = false; a.textContent = tr("Publica"); toast("No s'ha pogut publicar"); });
+      break;
+    }
+    case "post-open": { const ps = G().sessions.find(x => x.id === a.dataset.id); if (ps) { closeSheet(); openPublishSheet(ps); } break; }
+    case "post-remove": { const ps = G().sessions.find(x => x.id === a.dataset.id); if (ps && confirm("Treure aquest entrenament del feed?")) { unpublishSession(ps).then(() => { closeSheet(); toast("Tret del feed"); }); } break; }
     case "sess-edit": {
       if (G().active) { toast("Acaba primer la sessió en curs"); break; }
       GU.edit = clone(G().sessions.find(x => x.id === a.dataset.id)); GU.view = "train"; GU.tpl = null;
@@ -911,6 +1022,7 @@ function gymClick(e) {
     case "edit-save": {
       const ed = cleanSession(GU.edit), L = G().sessions, k = L.findIndex(x => x.id === ed.id);
       ed.prs = sessionPRs(ed);
+      if (ed.posted) setTimeout(() => republishSession(ed), 0);
       if (k >= 0) { if (ed.items.length) L[k] = ed; else L.splice(k, 1); }
       GU.edit = null; GU.view = "hist"; save(); render(); toast("Sessió actualitzada"); break;
     }

@@ -230,23 +230,38 @@ function applyTheme() {
 }
 
 // ——————————————————— navegació ———————————————————
-function setTab(tab) {
+const DIET_TABS = ["today", "meal", "foods", "stats"];
+const tabGroup = t => DIET_TABS.includes(t) ? "diet" : t;
+function setTab(tab, fromBack) {
+  if (tab === "diet") tab = DIET_TABS.includes(UI.tab) ? "today" : (UI.dietTab || "today");
+  UI.tabHist ||= [];
+  if (tab === "today") UI.tabHist = [];
+  else if (!fromBack && UI.tab !== tab) { UI.tabHist.push(UI.tab); if (UI.tabHist.length > 20) UI.tabHist.shift(); }
   if (voice && tab !== "meal") { voice.rec.abort(); voice = null; }
   UI.tab = tab;
-  $$("#tabbar button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+  if (DIET_TABS.includes(tab)) UI.dietTab = tab;
+  markTabbar();
   render();
   window.scrollTo({ top: 0 });
+  if (tab === "friends") friendsLoad();
+}
+function markTabbar() { $$("#tabbar button").forEach(b => b.classList.toggle("active", b.dataset.tab === tabGroup(UI.tab))); }
+function dietNav() {
+  return `<div class="seg diet-seg">${[["today", "Avui"], ["meal", "Menjar"], ["foods", "Aliments"], ["stats", "Gràfics"]].map(([k, l]) => `<button class="${UI.tab === k ? "on" : ""}" data-action="goto" data-tab="${k}">${l}</button>`).join("")}</div>`;
 }
 function render() {
   renderHeader();
   $("#tabbar [data-tab=gym]").classList.toggle("live", !!S.gym.active);
+  $("#tabbar [data-tab=friends]").classList.toggle("badge", FR.incoming.length > 0);
   const v = $("#view");
-  if (UI.tab === "today") v.innerHTML = viewToday();
-  else if (UI.tab === "meal") { v.innerHTML = viewMeal(); refreshAllLines(); }
-  else if (UI.tab === "foods") { v.innerHTML = viewFoods(); loadThumbs(); }
-  else if (UI.tab === "stats") v.innerHTML = viewStats();
+  if (UI.tab === "today") v.innerHTML = dietNav() + viewToday();
+  else if (UI.tab === "meal") { v.innerHTML = dietNav() + viewMeal(); refreshAllLines(); }
+  else if (UI.tab === "foods") { v.innerHTML = dietNav() + viewFoods(); loadThumbs(); }
+  else if (UI.tab === "stats") v.innerHTML = dietNav() + viewStats();
   else if (UI.tab === "profile") v.innerHTML = viewProfile();
   else if (UI.tab === "gym") { v.innerHTML = viewGym(); afterGymRender(); }
+  else if (UI.tab === "friends") v.innerHTML = viewFriendsTab();
+  navSync();
 }
 function renderHeader() {
   const h = $("#top");
@@ -261,7 +276,7 @@ function renderHeader() {
   } else if (UI.tab === "gym") {
     h.innerHTML = gymHeader();
   } else {
-    const titles = { foods: "Aliments", stats: "Estadístiques", profile: "Perfil" };
+    const titles = { foods: "Aliments", stats: "Estadístiques", profile: "Perfil", friends: "Amics" };
     const extra = UI.tab === "foods" ? `<button class="btn primary sm" data-action="food-new">${ICON.plus}Nou aliment</button>` : "";
     h.innerHTML = `<div class="top-inner"><h1>${titles[UI.tab]}</h1>${extra}</div>`;
   }
@@ -957,9 +972,7 @@ function viewStats() {
   const wDays = rows.filter(r => r.water > 0);
   const avgW = wDays.length ? wDays.reduce((s, r) => s + r.water, 0) / wDays.length : 0;
 
-  let html = `<div class="seg" style="margin:6px 0 12px">${[["me", "Jo"], ["friends", "Amics"]].map(([k, l]) => `<button class="${UI.statsView === k ? "on" : ""}" data-action="stats-view" data-v="${k}">${l}</button>`).join("")}</div>`;
-  if (UI.statsView === "friends") return html + viewFriends();
-  html += `<div class="seg" style="margin:0 0 12px">${[7, 14, 30].map(v => `<button class="${n === v ? "on" : ""}" data-action="stats-range" data-v="${v}">${v} dies</button>`).join("")}</div>`;
+  let html = `<div class="seg" style="margin:0 0 12px">${[7, 14, 30].map(v => `<button class="${n === v ? "on" : ""}" data-action="stats-range" data-v="${v}">${v} dies</button>`).join("")}</div>`;
   if (!logged.length && !wDays.length) return html + `<section class="card"><div class="empty">Quan registris menjars, aquí veuràs l'evolució dia a dia.</div></section>` + measuresCard();
 
   html += `<div class="kpis">
@@ -1071,7 +1084,27 @@ function viewProfile() {
   else if (isIOS()) installBlock = `<p class="small muted" style="margin:0 0 12px">Per instal·lar-la: obre-la amb Safari, toca <b>Compartir</b> i després <b>Afegir a la pantalla d'inici</b>.</p>`;
   else installBlock = `<p class="small muted" style="margin:0 0 12px">Per instal·lar-la: menú del navegador → <b>Instal·la l'aplicació</b> / <b>Afegeix a la pantalla d'inici</b>.</p>`;
 
+  const notiState = !("Notification" in window) ? "no" : Notification.permission;
   return `
+  <section class="card pub-card"><h2>Perfil públic</h2>
+    <div class="row" style="align-items:flex-start;gap:14px">
+      <label class="av-pick" data-nt>${avatarHTML({ avatar: p.avatar, name: p.name, user: SYNC.user || "?" }, 76)}<input type="file" accept="image/*" id="av-file" hidden><span class="av-edit">${ICON.camera}</span></label>
+      <div class="grow">
+        <div class="small muted">${SYNC.state === "in" ? `@<b data-nt>${esc(SYNC.user)}</b>` : "Sense compte"}</div>
+        <textarea class="input" data-p="bio" maxlength="160" rows="3" placeholder="Biografia (opcional): objectius, on entrenes…" style="margin-top:6px">${esc(p.bio || "")}</textarea>
+      </div>
+    </div>
+    ${p.avatar ? `<button class="link-btn del small" data-action="av-del" style="margin-top:6px">Treu la foto</button>` : ""}
+    <p class="small faint" style="margin:8px 0 0">La foto i la biografia les veuen els teus amics.</p>
+  </section>
+
+  <section class="card"><h2>Durant l'entreno</h2>
+    <label class="ss-tog"><input type="checkbox" data-pchk="bell" ${p.bell !== false ? "checked" : ""}> Timbre en acabar el descans</label>
+    <div class="kv" style="margin-top:8px"><span>Notificacions amb el descans i el proper exercici</span><b>${notiState === "granted" ? "Activades" : notiState === "denied" ? "Bloquejades" : notiState === "no" ? "No disponibles" : `<button class="btn sm primary" data-action="noti-ask">Activa</button>`}</b></div>
+    ${notiState === "denied" ? `<p class="small faint" style="margin:6px 0 0">Les has bloquejat: activa-les a la configuració del navegador o de l'app (permisos → notificacions).</p>` : ""}
+    <button class="btn block" data-action="bell-test" style="margin-top:8px">Prova el timbre</button>
+  </section>
+
   <section class="card"><h2>Dades personals</h2>
     <label class="field"><span>Nom</span><input class="input" data-p="name" value="${esc(p.name)}" placeholder="Opcional"></label>
     <label class="field"><span>Sexe</span><div class="seg">
@@ -1185,6 +1218,38 @@ async function importData(file) {
   } catch (e) { toast("Aquest fitxer no és una còpia vàlida"); }
 }
 
+// ——————————————————— botó «enrere» del mòbil ———————————————————
+// Mentre no som a la pantalla inicial (Dieta › Avui, sense res obert) hi ha una entrada extra a l'historial:
+// en prémer enrere, l'app tira enrere un pas; a la pantalla inicial, enrere surt de l'app.
+const sheetIsOpen = () => !$("#sheet").hidden;
+const loginIsOpen = () => { const l = $("#login"); return !!(l && !l.hidden); };
+const isRoot = () => loginIsOpen() || (UI.tab === "today" && !sheetIsOpen());
+let ignorePop = false;
+function navSync() {
+  if (ignorePop) return;                      // hi ha un «enrere» pendent
+  const g = history.state && history.state.rg;
+  if (!isRoot() && !g) history.pushState({ rg: 1 }, "");
+  else if (isRoot() && g) { ignorePop = true; history.back(); }
+}
+function navBack() {
+  if (sheetIsOpen()) { closeSheet(); return; }
+  if (UI.tab === "gym") {
+    if (GU.tpl) { if (!confirm("Sortir sense desar els canvis de la plantilla?")) return; GU.tpl = null; render(); return; }
+    if (GU.edit) { if (!confirm("Sortir sense desar els canvis de la sessió?")) return; GU.edit = null; render(); return; }
+    if (GU.progEx) { GU.progEx = null; render(); return; }
+    if (GU.view !== "train") { GU.view = "train"; render(); return; }
+  }
+  if (UI.tab === "friends" && FR.view !== "feed") { FR.view = "feed"; render(); return; }
+  const prev = (UI.tabHist || []).pop();
+  setTab(prev && prev !== UI.tab ? prev : "today", true);
+}
+window.addEventListener("popstate", () => {
+  if (ignorePop) { ignorePop = false; return; }
+  if (!isRoot()) navBack();
+  navSync();
+});
+new MutationObserver(() => navSync()).observe($("#sheet"), { attributes: true, attributeFilter: ["hidden"] });
+
 // ——————————————————— esdeveniments ———————————————————
 document.addEventListener("click", e => {
   const tabBtn = e.target.closest("#tabbar button");
@@ -1283,6 +1348,9 @@ document.addEventListener("click", e => {
     case "m-del": if (confirm("Eliminar les mesures d'aquest dia?")) { S.measures = S.measures.filter(m => m.d !== a.dataset.d); save(); closeSheet(); render(); } break;
     case "m-hist": openMeasureHistory(); break;
     case "m-edit": closeSheet(); openMeasureSheet(a.dataset.d); break;
+    case "noti-ask": if ("Notification" in window) Notification.requestPermission().then(() => render()); break;
+    case "bell-test": audioUnlock(); playBell(); break;
+    case "av-del": S.profile.avatar = ""; save(); render(); break;
     case "set-lang":
       if ((S.profile.lang || "ca") !== a.dataset.v) { S.profile.lang = a.dataset.v; S.profile.voiceLang = a.dataset.v === "es" ? "es-ES" : "ca-ES"; save(); setTimeout(() => location.reload(), 300); }
       break;
@@ -1383,7 +1451,8 @@ UI._lastToday = todayKey();
   try { if (navigator.storage && navigator.storage.persisted) STORE.persisted = await navigator.storage.persisted(); } catch (e) {}
   if (!STORE.persisted && (S.foods.length || Object.keys(S.days).length || S.profile.weight)) requestPersist();
   STORE.booted = true;
-  if (S.gym.active) { UI.tab = "gym"; $$("#tabbar button").forEach(b => b.classList.toggle("active", b.dataset.tab === "gym")); }
+  if (S.gym.active) UI.tab = "gym";
+  markTabbar();
   applyTheme();
   render();
   recoverEditor();
@@ -1391,3 +1460,9 @@ UI._lastToday = todayKey();
   i18nStart();
   syncInit();
 })();
+
+document.addEventListener("change", async e => {
+  if (e.target.id !== "av-file" || !e.target.files[0]) return;
+  try { S.profile.avatar = await cropSquare(await compressImage(e.target.files[0], 512, 0.85, 400000), 192); save(); render(); toast("Foto de perfil desada"); }
+  catch (err) { toast("No s'ha pogut obrir la imatge"); }
+});

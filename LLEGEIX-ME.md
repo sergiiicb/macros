@@ -38,6 +38,13 @@ service cloud.firestore {
     match /pub/{uid} {
       allow read: if request.auth != null && (request.auth.uid == uid || request.auth.uid in resource.data.friends);
       allow write: if request.auth != null && request.auth.uid == uid;
+      // Entrenaments publicats al feed: els llegeixen ell i els seus amics; els amics només poden aplaudir
+      match /posts/{pid} {
+        allow read: if request.auth != null && (request.auth.uid == uid || request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends);
+        allow create, delete: if request.auth != null && request.auth.uid == uid;
+        allow update: if request.auth != null && (request.auth.uid == uid ||
+          (request.auth.uid in get(/databases/$(database)/documents/pub/$(uid)).data.friends && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['kudos'])));
+      }
     }
     // Sol·licituds d'amistat
     match /requests/{rid} {
@@ -74,19 +81,27 @@ Un cop oberta la primera vegada funciona sense connexió. La lectura d'etiquetes
 
 A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que has menjat: *"per dinar dos-cents grams de pollastre, cinquanta de pebrot i cent cinquanta d'arròs"*. Detecta l'àpat, entén números dits amb paraules i ho calcula sol. L'idioma (català o castellà) es tria a Perfil. Fa servir el reconeixement de veu del navegador (gratuït; cal connexió). Si el navegador no el permet, el micròfon del teclat del mòbil fa el mateix.
 
-## Amics i classificació
+## Amics, feed i classificació
 
-Gràfics → **Amics**. Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, dies complint kcal, proteïna i aigua, dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
+Pestanya **Amics**: **Feed** (els entrenaments que publiqueu tu i els teus amics, amb foto opcional i aplaudiments 👏), **Classificació** i **Amics** (afegir, acceptar sol·licituds). En acabar una sessió pots publicar-la amb una foto i un text; també des de l'historial (Publica / Treu del feed). A Perfil hi ha la foto de perfil i una biografia opcional.
+
+Per afegir un amic: Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, mitjana de kcal, proteïna i aigua (només dels dies amb registre), dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
 
 Cada persona necessita el seu compte (usuari i contrasenya). Al mateix mòbil es pot canviar de compte: en tancar la sessió, les dades d'aquell compte s'esborren del dispositiu (queden al núvol) i el següent usuari entra amb les seves.
 
 ## Mesures corporals
 
-Gràfics → **Mesures corporals → Registra**: espatlles, pectoral, bíceps, avantbraç, cintura, maluc, glutis, quàdriceps, bessó, coll i % de greix. Gràfica per mesura i variació a 7 dies, 30 dies i total.
+Dieta → Gràfics → **Mesures corporals → Registra**: espatlles, pectoral, bíceps, avantbraç, cintura, maluc, glutis, quàdriceps, bessó, coll i % de greix. Gràfica per mesura i variació a 7 dies, 30 dies i total.
 
 ## Idioma
 
 Perfil → **Idioma de l'app**: català o castellà. Canvia també l'idioma del dictat per veu (es pot tornar a canviar a part).
+
+## Descans: timbre i notificació
+
+- En acabar el descans sona un timbre. Amb l'app oberta es fa amb un so curt, i a Android la música que tinguis posada baixa de volum mentre sona.
+- Si surts de l'app durant l'entreno, la notificació mostra el descans que queda, l'hora en què acaba i el proper exercici (sèrie, repes objectiu i el que vas fer l'últim cop), en l'idioma de l'app i amb el logo. Activa les notificacions a Perfil → Durant l'entreno.
+- Amb el mòbil bloquejat: si el sistema manté l'app activa, avisa amb la notificació (so i vibració). Si el sistema la congela, sona el timbre de reserva programat (1 s més tard), però sense baixar la música.
 
 ## Gimnàs
 
