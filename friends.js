@@ -3,23 +3,24 @@
    els usuaris que ell té a la seva llista d'amics (regles de Firestore). Les mesures corporals i el pes
    només es comparteixen com a variació, mai el valor absolut. */
 
-const FR = { view: "feed", friends: [], incoming: [], loaded: false, loading: false, period: "p7", cat: "days", ex: null, measure: "waist", asc: false, err: null,
+const FR = { view: "feed", friends: [], incoming: [], loaded: false, loading: false, period: "p7", group: "gym", cat: "sessions", ex: null, measure: "waist", asc: false, err: null,
   feed: [], feedLoaded: false, feedLoading: false, feedLimit: 10, open: {} };
 const PERIODS = [["p7", "7 dies"], ["p30", "30 dies"], ["all", "Total"]];
 const LB = [
-  { k: "days", l: "Dies entrenats", u: "dies" },
+  { k: "avgKcal", l: "Mitjana de kcal", s: "Kcal", u: "kcal", order: true, int: true },
+  { k: "avgWater", l: "Mitjana d'aigua", s: "Aigua", u: "L", order: true, dec2: true },
+  { k: "avgProt", l: "Mitjana de proteïna", s: "Proteïna", u: "g", order: true, int: true },
   { k: "sessions", l: "Sessions", u: "" },
-  { k: "sets", l: "Sèries efectives", u: "" },
-  { k: "volume", l: "Volum total", u: "kg" },
-  { k: "prs", l: "Rècords", u: "" },
-  { k: "e1", l: "1RM estimada", u: "kg", ex: true },
-  { k: "w", l: "Pes màxim", u: "kg", ex: true },
-  { k: "avgKcal", l: "Mitjana de kcal", u: "kcal", order: true, int: true },
-  { k: "avgProt", l: "Mitjana de proteïna", u: "g", order: true, int: true },
-  { k: "avgWater", l: "Mitjana d'aigua", u: "L", order: true, dec2: true },
-  { k: "logDays", l: "Dies registrant menjars", u: "dies" },
+  { k: "sets", l: "Sèries efectives", s: "Sèries", u: "" },
+  { k: "volume", l: "Volum total", s: "Volum", u: "kg" },
+  { k: "e1", l: "1RM estimada", s: "1RM", u: "kg", ex: true },
+  { k: "w", l: "Pes màxim", s: "Pes màx.", u: "kg", ex: true },
   { k: "wDelta", l: "Variació de pes", u: "kg", delta: true },
-  { k: "m", l: "Variació de mesures", u: "cm", delta: true, measure: true },
+];
+const LB_GROUPS = [
+  { k: "diet", l: "Alimentació", cats: ["avgKcal", "avgWater", "avgProt"] },
+  { k: "gym", l: "Gimnàs", cats: ["sessions", "sets", "volume", "e1", "w"] },
+  { k: "weight", l: "Pes", cats: ["wDelta"] },
 ];
 
 // ——— estadístiques pròpies que es publiquen ———
@@ -186,10 +187,14 @@ function lbValue(st, c) {
 function leaderboardHTML() {
   const myStats = computePubStats();
   const people = [{ me: true, user: SYNC.user, name: S.profile.name, avatar: S.profile.avatar, stats: myStats }, ...FR.friends.filter(f => f.status === "ok")];
-  const c = LB.find(x => x.k === FR.cat) || LB[0];
+  const grp = LB_GROUPS.find(g => g.k === FR.group) || LB_GROUPS[1];
+  if (!grp.cats.includes(FR.cat)) FR.cat = grp.cats[0];
+  const c = LB.find(x => x.k === FR.cat);
   let html = `<section class="card"><h2>Classificació</h2>
     <div class="seg" style="margin-bottom:10px">${PERIODS.map(([k, l]) => `<button class="${FR.period === k ? "on" : ""}" data-fr="period" data-v="${k}">${l}</button>`).join("")}</div>
-    <div class="seg chips-seg" style="margin-bottom:10px">${LB.map(x => `<button class="${x.k === c.k ? "on" : ""}" data-fr="cat" data-v="${x.k}">${x.l}</button>`).join("")}</div>`;
+    <div class="seg" style="margin-bottom:8px">${LB_GROUPS.map(g => `<button class="${g.k === grp.k ? "on" : ""}" data-fr="group" data-v="${g.k}">${g.l}</button>`).join("")}</div>
+    ${grp.cats.length > 1 ? `<div class="seg chips-seg sub-seg" style="margin-bottom:10px">${grp.cats.map(k => { const x = LB.find(y => y.k === k); return `<button class="${k === c.k ? "on" : ""}" data-fr="cat" data-v="${k}">${x.s || x.l}</button>`; }).join("")}</div>` : ""}
+    ${c.s ? `<p class="small muted" style="margin:0 0 8px">${c.l}</p>` : ""}`;
   if (c.ex) {
     const exs = new Map();
     for (const pp of people) for (const [id, r] of Object.entries((pp.stats && pp.stats.ex) || {})) if (!exs.has(id)) exs.set(id, GYM_DB_MAP.has(id) || G().custom.some(x => x.id === id) ? exName(id) : r.n);
@@ -225,6 +230,7 @@ document.addEventListener("click", e => {
   else if (k === "remove") friendRemove(a.dataset.id);
   else if (k === "reload") friendsLoad(true);
   else if (k === "period") { FR.period = a.dataset.v; frRender(); }
+  else if (k === "group") { FR.group = a.dataset.v; FR.cat = LB_GROUPS.find(g => g.k === FR.group).cats[0]; FR.asc = false; frRender(); }
   else if (k === "cat") { FR.cat = a.dataset.v; FR.asc = false; frRender(); }
   else if (k === "measure") { FR.measure = a.dataset.v; frRender(); }
   else if (k === "order") { FR.asc = !FR.asc; frRender(); }

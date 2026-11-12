@@ -488,3 +488,4 @@ body:has(.rest-bar:not([hidden])) .toast { bottom: calc(var(--tabbar) + env(safe
 .kudos.on { background: var(--accent-soft); border-color: transparent; color: var(--accent); font-weight: 700; }
 .photo-pick { display: grid; place-items: center; gap: 6px; border: 1.5px dashed var(--border); border-radius: 14px; padding: 16px; cursor: pointer; color: var(--muted); text-align: center; }
 .photo-pick img { max-width: 100%; max-height: 260px; border-radius: 10px; }
+.sub-seg button { font-size: 13px; padding: 6px 8px; flex: 1 1 auto; }
