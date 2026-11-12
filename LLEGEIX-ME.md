@@ -32,6 +32,7 @@ service cloud.firestore {
     match /usernames/{name} {
       allow read: if request.auth != null;
       allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+      allow update: if request.auth != null && resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid;
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
     }
     // Resum públic: el llegeixen només ell i els amics que ell ha acceptat
@@ -85,7 +86,7 @@ A **Menjar** (o amb el botó **Dicta** d'Avui) toca el micròfon i digues el que
 
 Pestanya **Amics**: **Feed** (els entrenaments que publiqueu tu i els teus amics, amb foto opcional i aplaudiments 👏), **Classificació** i **Amics** (afegir, acceptar sol·licituds). En acabar una sessió pots publicar-la amb una foto i un text; també des de l'historial (Publica / Treu del feed). A Perfil hi ha la foto de perfil i una biografia opcional.
 
-Per afegir un amic: Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, mitjana de kcal, proteïna i aigua (només dels dies amb registre), dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
+Per afegir un amic, escriu el seu usuari o nom a Amics → Amics: mentre escrius surten els usuaris que més s'hi assemblen (encara que no l'escriguis exacte), amb el nom i la foto; toca'n un per veure'n la biografia. Escriu el nom d'usuari d'un amic i prem **Afegeix**: li arriba una sol·licitud i, quan l'accepta, tots dos sortiu a la classificació. Es pot filtrar per període (7 dies, 30 dies, total) i per àmbit: dies entrenats, sessions, sèries, volum, rècords, 1RM estimada i pes màxim de cada exercici, mitjana de kcal, proteïna i aigua (només dels dies amb registre), dies registrant menjars, variació de pes i variació de cada mesura. Del pes i les mesures només es comparteix la variació, no el valor.
 
 Cada persona necessita el seu compte (usuari i contrasenya). Al mateix mòbil es pot canviar de compte: en tancar la sessió, les dades d'aquell compte s'esborren del dispositiu (queden al núvol) i el següent usuari entra amb les seves.
 

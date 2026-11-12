@@ -1350,7 +1350,7 @@ document.addEventListener("click", e => {
     case "m-edit": closeSheet(); openMeasureSheet(a.dataset.d); break;
     case "noti-ask": if ("Notification" in window) Notification.requestPermission().then(() => render()); break;
     case "bell-test": audioUnlock(); playBell(); break;
-    case "av-del": S.profile.avatar = ""; save(); render(); break;
+    case "av-del": S.profile.avatar = ""; S.profile.avatarSm = ""; save(); render(); break;
     case "set-lang":
       if ((S.profile.lang || "ca") !== a.dataset.v) { S.profile.lang = a.dataset.v; S.profile.voiceLang = a.dataset.v === "es" ? "es-ES" : "ca-ES"; save(); setTimeout(() => location.reload(), 300); }
       break;
@@ -1463,6 +1463,6 @@ UI._lastToday = todayKey();
 
 document.addEventListener("change", async e => {
   if (e.target.id !== "av-file" || !e.target.files[0]) return;
-  try { S.profile.avatar = await cropSquare(await compressImage(e.target.files[0], 512, 0.85, 400000), 192); save(); render(); toast("Foto de perfil desada"); }
+  try { S.profile.avatar = await cropSquare(await compressImage(e.target.files[0], 512, 0.85, 400000), 192); S.profile.avatarSm = ""; save(); render(); toast("Foto de perfil desada"); }
   catch (err) { toast("No s'ha pogut obrir la imatge"); }
 });

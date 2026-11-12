@@ -82,12 +82,27 @@ async function ensurePublicProfile() {
   const u = SYNC.user, uid = SYNC.uid;
   const un = await FB.getDoc(FB.doc(FB.db, "usernames", u));
   if (!un.exists()) await FB.setDoc(FB.doc(FB.db, "usernames", u), { uid });
+  await pushPublicCard();
   const me = await FB.getDoc(pubRef(uid));
   if (!me.exists()) await FB.setDoc(pubRef(uid), { user: u, name: S.profile.name || "", friends: [], friendNames: {} });
+}
+// Fitxa visible a la cerca d'usuaris (qualsevol usuari amb compte): només nom, foto petita i bio
+let lastCardHash = null;
+async function pushPublicCard() {
+  if (SYNC.state !== "in") return;
+  const p = S.profile;
+  if (p.avatar && !p.avatarSm) { p.avatarSm = await cropSquare(p.avatar, 64); saveLocalOnly(); }
+  if (!p.avatar && p.avatarSm) { p.avatarSm = ""; saveLocalOnly(); }
+  const card = { uid: SYNC.uid, name: p.name || "", nameL: norm(p.name || ""), bio: p.bio || "", av: p.avatarSm || "" };
+  const h = hashOf(card);
+  if (h === lastCardHash) return;
+  await FB.setDoc(FB.doc(FB.db, "usernames", SYNC.user), card, { merge: true });
+  lastCardHash = h;
 }
 let lastPubHash = null;
 async function pushPublicStats() {
   if (SYNC.state !== "in") return;
+  try { await pushPublicCard(); } catch (e) { console.warn(e); }
   const stats = computePubStats(), name = S.profile.name || "", avatar = S.profile.avatar || "", bio = S.profile.bio || "";
   const h = hashOf({ stats, name, avatar, bio, d: todayKey() });
   if (h === lastPubHash) return;
@@ -113,21 +128,25 @@ async function friendsLoad(force) {
   } catch (e) { console.error(e); FR.err = e && e.code === "permission-denied" ? "Permís denegat: actualitza les regles de Firestore (LLEGEIX-ME)" : "No s'han pogut carregar els amics"; }
   FR.loading = false; frRender();
 }
-async function friendAdd() {
-  const inp = $("#fr-user"), u = inp.value.trim().toLowerCase();
+async function friendAdd(user, knownUid) {
+  const inp = $("#fr-user"), u = (user || (inp ? inp.value : "")).trim().toLowerCase();
   if (!u) return;
   if (u === SYNC.user) return toast("Aquest ets tu");
   try {
-    const d = await FB.getDoc(FB.doc(FB.db, "usernames", u));
-    if (!d.exists()) return toast("No hi ha cap usuari amb aquest nom");
-    const uid = d.data().uid;
+    let uid = knownUid;
+    if (!uid) {
+      const d = await FB.getDoc(FB.doc(FB.db, "usernames", u));
+      if (!d.exists()) return toast("No hi ha cap usuari amb aquest nom");
+      uid = d.data().uid;
+    }
     if (FR.friends.some(f => f.uid === uid)) return toast("Ja el tens a la llista");
     await FB.updateDoc(pubRef(SYNC.uid), { friends: FB.arrayUnion(uid), [`friendNames.${uid}`]: u });
     const inc = FR.incoming.find(r => r.from === uid);
     if (inc) await FB.deleteDoc(FB.doc(FB.db, "requests", inc.id));
     else await FB.setDoc(FB.doc(FB.db, "requests", `${uid}_${SYNC.uid}`), { from: SYNC.uid, fromUser: SYNC.user, to: uid, ts: FB.serverTimestamp() });
     toast(inc ? `Ara ets amic de ${u}` : `Sol·licitud enviada a ${u}`);
-    inp.value = "";
+    if (inp) inp.value = "";
+    FR.q = ""; FR.openRes = null;
     await friendsLoad(true);
   } catch (e) { console.error(e); toast("No s'ha pogut enviar"); }
 }
@@ -170,10 +189,11 @@ function viewFriends() {
   if (FR.err) html += `<div class="banner warn"><span>${esc(FR.err)}</span></div>`;
   if (FR.incoming.length) html += `<section class="card"><h2>Sol·licituds d'amistat</h2>${FR.incoming.map(r => `<div class="kv"><span data-nt><b>${esc(r.fromUser)}</b></span><span class="row"><button class="btn sm primary" data-fr="accept" data-id="${esc(r.id)}">Accepta</button><button class="btn sm ghost" data-fr="reject" data-id="${esc(r.id)}">Rebutja</button></span></div>`).join("")}</section>`;
   html += `<section class="card"><h2>Amics <span class="sub"><button class="btn sm ghost" data-fr="reload">${FR.loading ? "Carregant…" : "Actualitza"}</button></span></h2>
-    <div class="row" style="margin-bottom:10px"><input class="input grow" id="fr-user" placeholder="Nom d'usuari del teu amic" autocapitalize="none" spellcheck="false"><button class="btn primary" data-fr="add">Afegeix</button></div>
+    <input class="input" type="search" id="fr-user" placeholder="Busca per usuari o nom…" autocapitalize="none" spellcheck="false" autocomplete="off" value="${esc(FR.q || "")}">
+    <div id="fr-results" class="fr-results">${searchResultsHTML()}</div>
     ${FR.friends.length ? FR.friends.map(f => `<div class="kv fr-row"><span class="row" data-nt>${avatarHTML(f, 36)}<span><b>${esc(f.user)}</b>${f.name ? ` <span class="faint">${esc(f.name)}</span>` : ""}${f.bio ? `<br><span class="small muted">${esc(f.bio)}</span>` : ""}</span></span><span class="row">${f.status === "pending" ? `<span class="small faint">Pendent d'acceptar</span>` : `<span class="small" style="color:var(--accent)">Connectat</span>`}<button class="link-btn del" data-fr="remove" data-id="${esc(f.uid)}" aria-label="Treu">×</button></span></div>`).join("")
-      : `<p class="small faint" style="margin:0">Encara no tens amics. Demana'ls el seu nom d'usuari de l'app i afegeix-los: quan acceptin, sortiran a la classificació.</p>`}
-    <p class="small faint" style="margin:10px 0 0">El teu usuari és <b data-nt>${esc(SYNC.user)}</b>. Els amics veuen els teus totals d'entrenament, rècords, dies complint objectius i la <b>variació</b> del pes i de les mesures (no els valors).</p>
+      : `<p class="small faint" style="margin:0">Encara no tens amics. Busca'ls per usuari o nom i afegeix-los: quan acceptin, sortiran al feed i a la classificació.</p>`}
+    <p class="small faint" style="margin:10px 0 0">El teu usuari és <b data-nt>${esc(SYNC.user)}</b>. A la cerca, qualsevol usuari pot veure el teu usuari, nom, foto i biografia. Els amics veuen els teus entrenaments publicats, totals d'entrenament, rècords, mitjanes de dieta i la <b>variació</b> del pes i de les mesures (no els valors).</p>
   </section>`;
   return html;
 }
@@ -236,7 +256,11 @@ document.addEventListener("click", e => {
   else if (k === "order") { FR.asc = !FR.asc; frRender(); }
 });
 document.addEventListener("change", e => { if (e.target.dataset.frSel === "ex") { FR.ex = e.target.value; frRender(); } });
-document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "fr-user") friendAdd(); });
+document.addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.target.id !== "fr-user") return;
+  const top = searchUsers(FR.q || "")[0];
+  if (top && !FR.friends.some(f => f.uid === top.uid)) friendAdd(top.user, top.uid);
+});
 
 // ——————————————————— FEED ———————————————————
 // Cada sessió publicada és pub/{uid}/posts/{idSessió}. La poden llegir l'autor i els seus amics.
@@ -352,3 +376,80 @@ function cropSquare(dataURL, size) {
     img.src = dataURL;
   });
 }
+
+// ——— cerca d'usuaris mentre escrius ———
+// Es baixa la llista de fitxes públiques (usuari, nom, foto petita, bio) un cop i es filtra al mòbil:
+// així troba noms semblants encara que no els escriguis exactes.
+FR.q = ""; FR.index = null; FR.indexAt = 0; FR.openRes = null;
+async function userIndex() {
+  if (FR.index && Date.now() - FR.indexAt < 5 * 60000) return FR.index;
+  const q = await FB.getDocs(FB.query(FB.collection(FB.db, "usernames"), FB.limit(2000)));
+  const L = []; q.forEach(d => L.push({ user: d.id, ...d.data() }));
+  FR.index = L; FR.indexAt = Date.now();
+  return L;
+}
+function lev(a, b) {                 // distància d'edició amb transposicions (lletres girades compten 1)
+  const m = a.length, n = b.length; if (!m) return n; if (!n) return m;
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) d[0][j] = j;
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
+    const c = a[i - 1] === b[j - 1] ? 0 : 1;
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+    if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+  }
+  return d[m][n];
+}
+function matchScore(q, t) {
+  if (!t) return 0;
+  if (t === q) return 100;
+  if (t.startsWith(q)) return 85 - Math.min(20, t.length - q.length);
+  if (t.split(/[\s._-]+/).some(w => w.startsWith(q))) return 70;
+  if (t.includes(q)) return 60;
+  // semblança (errors d'escriptura): compara amb el tros del mateix llarg
+  const cands = [t, ...t.split(/[\s._-]+/)].filter(Boolean);
+  const dist = Math.min(...cands.flatMap(w => [lev(q, w), lev(q, w.slice(0, q.length))]));
+  const r = 1 - dist / Math.max(q.length, 1);
+  return r >= 0.6 ? Math.round(50 * r) : 0;
+}
+function searchUsers(q) {
+  const nq = norm(q).trim();
+  if (!nq || !FR.index) return [];
+  return FR.index.filter(u => u.uid !== SYNC.uid)
+    .map(u => ({ u, sc: Math.max(matchScore(nq, norm(u.user)), matchScore(nq, u.nameL || norm(u.name || "")) - 2) }))
+    .filter(x => x.sc > 0).sort((a, b) => b.sc - a.sc || a.u.user.localeCompare(b.u.user)).slice(0, 8).map(x => x.u);
+}
+function searchResultsHTML() {
+  const q = (FR.q || "").trim();
+  if (!q) return "";
+  if (!FR.index) return `<p class="small faint" style="margin:8px 2px">Buscant…</p>`;
+  const res = searchUsers(q);
+  if (!res.length) return `<p class="small faint" style="margin:8px 2px">Cap usuari s'hi assembla.</p>`;
+  return res.map(u => {
+    const f = FR.friends.find(x => x.uid === u.uid), inc = FR.incoming.find(r => r.from === u.uid), open = FR.openRes === u.uid;
+    const action = f ? `<span class="small faint">${f.status === "ok" ? "Ja sou amics" : "Pendent"}</span>`
+      : `<button class="btn sm primary" data-fr="add-uid" data-uid="${esc(u.uid)}" data-user="${esc(u.user)}">${inc ? "Accepta" : "Afegeix"}</button>`;
+    return `<div class="sr-row ${open ? "open" : ""}">
+      <div class="sr-main" data-fr="sr-open" data-uid="${esc(u.uid)}" role="button" data-nt>${avatarHTML({ avatar: u.av, name: u.name, user: u.user }, 40)}
+        <div class="grow"><b>${esc(u.user)}</b>${u.name ? `<div class="small muted">${esc(u.name)}</div>` : ""}</div></div>
+      ${action}
+      ${open ? `<div class="sr-bio" data-nt>${u.av ? `<img class="av" src="${esc(u.av)}" alt="" style="width:64px;height:64px">` : ""}<p class="small">${u.bio ? esc(u.bio) : `<span class="faint">${tr("Sense biografia")}</span>`}</p></div>` : ""}
+    </div>`;
+  }).join("");
+}
+function refreshSearch() { const box = $("#fr-results"); if (box) box.innerHTML = searchResultsHTML(); }
+let srT = null;
+document.addEventListener("input", e => {
+  if (e.target.id !== "fr-user") return;
+  FR.q = e.target.value; FR.openRes = null;
+  clearTimeout(srT);
+  srT = setTimeout(async () => {
+    if (!FR.q.trim()) return refreshSearch();
+    if (!FR.index) { refreshSearch(); try { await userIndex(); } catch (err) { console.warn(err); } }
+    refreshSearch();
+  }, 150);
+});
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-fr]"); if (!a) return;
+  if (a.dataset.fr === "sr-open") { FR.openRes = FR.openRes === a.dataset.uid ? null : a.dataset.uid; refreshSearch(); }
+  else if (a.dataset.fr === "add-uid") { a.disabled = true; friendAdd(a.dataset.user, a.dataset.uid); }
+});

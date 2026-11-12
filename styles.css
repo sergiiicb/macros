@@ -489,3 +489,9 @@ body:has(.rest-bar:not([hidden])) .toast { bottom: calc(var(--tabbar) + env(safe
 .photo-pick { display: grid; place-items: center; gap: 6px; border: 1.5px dashed var(--border); border-radius: 14px; padding: 16px; cursor: pointer; color: var(--muted); text-align: center; }
 .photo-pick img { max-width: 100%; max-height: 260px; border-radius: 10px; }
 .sub-seg button { font-size: 13px; padding: 6px 8px; flex: 1 1 auto; }
+.fr-results { margin: 8px 0 12px; }
+.sr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+.sr-row:first-child { border-top: 0; }
+.sr-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.sr-bio { flex-basis: 100%; display: flex; gap: 12px; align-items: flex-start; background: var(--surface-2); border-radius: 12px; padding: 10px; }
+.sr-bio p { margin: 0; white-space: pre-wrap; }
