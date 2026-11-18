@@ -379,13 +379,12 @@ function playBell() {
   if (!bellOn()) return;
   try { if (!bellEl) bellEl = new Audio(BELL_URL); bellEl.currentTime = 0; const p = bellEl.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
 }
-// Al final del descans: si l'app és viva abans de la reserva, la cancel·la i fa sonar el timbre normal
+// Al final del descans: si l'app és viva abans de la reserva, la cancel·la i fa sonar la campana
 function ringRestEnd() {
   const early = bellFallback && Date.now() < bellFallback.at - 150;
-  if (bellFallback && !early) return "fallback";          // la reserva ja ha sonat o està sonant
+  if (bellFallback && !early) return;                     // la reserva ja ha sonat o està sonant
   cancelFallbackBell();
-  if (document.visibilityState === "visible" || !notiOK()) { playBell(); return "bell"; }
-  return "noti";                                          // amb l'app tancada: so de la notificació (també baixa la música)
+  playBell();
 }
 
 // ——— notificació de la sessió (fora de l'app) ———
@@ -409,34 +408,46 @@ function nextUp(a) {
   }
   return null;
 }
-let notiLast = 0;
-async function showSessionNoti(ring) {
-  if (!notiOK()) return;
-  const a = G().active; if (!a) return;
-  const now = Date.now();
-  if (!ring && now - notiLast < 950) return;
-  notiLast = now;
+// Una sola notificació, només durant el descans: apareix quan surts de l'app amb un descans en marxa
+// i desapareix quan s'acaba o quan en comença un altre. A Android s'actualitza el compte enrere al mateix lloc;
+// a l'iPhone cada actualització en crearia una de nova, així que s'hi posa només l'hora en què acaba.
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const NOTI = { end: null, last: 0, busy: false };
+const hhmmss = d => new Date(d).toLocaleTimeString(LOC(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+async function swReg() { try { return navigator.serviceWorker ? await navigator.serviceWorker.getRegistration() : null; } catch (e) { return null; } }
+async function closeSessionNoti() {
+  NOTI.end = null;
+  const reg = await swReg(); if (!reg) return;
+  try { (await reg.getNotifications()).forEach(n => { if (!n.tag || n.tag === NOTI_TAG) n.close(); }); } catch (e) {}
+  try { reg.active && reg.active.postMessage({ type: "close-noti", tag: NOTI_TAG }); } catch (e) {}
+}
+async function showRestNoti() {
+  if (!notiOK() || NOTI.busy) return;
+  const a = G().active, t = a && a.timer, now = Date.now();
+  if (!t || t.end <= now) return;
+  const fresh = NOTI.end !== t.end;                       // descans nou (o canviat amb ±15 s)
+  if (!fresh && (IS_IOS || now - NOTI.last < 1000)) return;
+  NOTI.busy = true;
   try {
-    const reg = await navigator.serviceWorker.getRegistration(); if (!reg) return;
-    const t = a.timer, nu = nextUp(a), hhmm = d => new Date(d).toLocaleTimeString(LOC(), { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    let title;
-    if (t && t.end > now) title = `${tr("Descans")} ${fmtClock(t.end - now)} · ${tr("fins a les")} ${hhmm(t.end)}`;
-    else if (t) title = tr("Descans acabat");
-    else title = `${tr("Entrenament en curs")} · ${fmtClock(now - a.start)}`;
+    const reg = await swReg(); if (!reg) return;
+    if (fresh && IS_IOS) await closeSessionNoti();        // a l'iPhone no se substitueixen soles
+    const nu = nextUp(a);
+    const title = IS_IOS ? `${tr("Descans fins a les")} ${hhmmss(t.end)}` : `${tr("Descans")} ${fmtClock(t.end - now)} · ${tr("fins a les")} ${hhmmss(t.end)}`;
     await reg.showNotification(title, {
       body: nu ? `${tr("Següent:")} ${nu}` : tr("Tots els exercicis fets"),
       tag: NOTI_TAG, icon: "icons/icon-192.png", badge: "icons/badge-96.png",
-      silent: !ring, renotify: !!ring, vibrate: ring ? [250, 120, 250, 120, 400] : undefined, data: { url: location.href.split("#")[0] },
+      silent: true, renotify: false, data: { url: location.href.split("#")[0] },
     });
-  } catch (e) {}
-}
-async function closeSessionNoti() {
-  try { const reg = navigator.serviceWorker && await navigator.serviceWorker.getRegistration(); if (reg) (await reg.getNotifications({ tag: NOTI_TAG })).forEach(n => n.close()); } catch (e) {}
+    NOTI.end = t.end; NOTI.last = now;
+    const t2 = G().active && G().active.timer;           // si mentrestant ha acabat o ha canviat, fora
+    if (!t2 || t2.end <= Date.now() || document.visibilityState === "visible") closeSessionNoti();
+  } catch (e) {} finally { NOTI.busy = false; }
 }
 function startRest(sec, label) {
   const a = G().active;
   if (!a || !sec) return;
   audioUnlock();
+  if (NOTI.end) closeSessionNoti();                       // comença un descans nou: fora l'anterior
   a.timer = { end: Date.now() + sec * 1000, total: sec, label };
   scheduleFallbackBell(a.timer.end);
   gymSave();
@@ -462,9 +473,9 @@ function updateTimerBar() {
     <button class="btn sm primary" data-g="rest-skip">${done ? "D'acord" : "Salta"}</button></div>`;
   if (done && !t.fired) {
     t.fired = true; gymSave();
-    const how = ringRestEnd();
+    ringRestEnd();
+    closeSessionNoti();
     try { navigator.vibrate && navigator.vibrate([250, 120, 250, 120, 400]); } catch (e) {}
-    if (document.visibilityState !== "visible") showSessionNoti(how === "noti");
   }
 }
 function gymReady() { try { return !!(S && S.gym); } catch (e) { return false; } }
@@ -472,7 +483,10 @@ setInterval(() => {
   if (!gymReady()) return;
   if (G().active && G().active.timer) updateTimerBar();
   const el = $("#gym-elapsed"); if (el && G().active) el.textContent = fmtClock(Date.now() - G().active.start);
-  if (G().active && document.visibilityState !== "visible") showSessionNoti(false);
+  if (document.visibilityState !== "visible") {
+    const t = G().active && G().active.timer;
+    if (t && t.end > Date.now()) showRestNoti(); else if (NOTI.end) closeSessionNoti();
+  }
 }, 250);
 
 // Pantalla sempre encesa durant la sessió
@@ -487,7 +501,7 @@ async function syncWakeLock() {
 document.addEventListener("visibilitychange", () => {
   if (!gymReady()) return;
   syncWakeLock(); updateTimerBar();
-  if (document.visibilityState === "visible") closeSessionNoti(); else showSessionNoti(false);
+  if (document.visibilityState === "visible") closeSessionNoti(); else showRestNoti();
 });
 
 // ——————————————————— fi de sessió ———————————————————
@@ -986,7 +1000,7 @@ function gymClick(e) {
     }
     case "ss-rm-last": { const it = s.items[+si.dataset.si]; it.sets.pop(); gymSave(true); render(); break; }
     case "rest-add": { const t = G().active && G().active.timer; if (t) { t.end += +a.dataset.v * 1000; t.total = Math.max(1, t.total + +a.dataset.v); t.fired = false; scheduleFallbackBell(t.end); gymSave(); updateTimerBar(); } break; }
-    case "rest-skip": if (G().active) { G().active.timer = null; cancelFallbackBell(); gymSave(); updateTimerBar(); } break;
+    case "rest-skip": if (G().active) { G().active.timer = null; cancelFallbackBell(); closeSessionNoti(); gymSave(); updateTimerBar(); } break;
     case "sess-finish": finishSession(); break;
     case "sess-discard": if (confirm("Descartar la sessió? No es desarà res.")) { G().active = null; cancelFallbackBell(); closeSessionNoti(); save(); syncWakeLock(); updateTimerBar(); render(); } break;
     // menú d'exercici

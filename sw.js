@@ -1,5 +1,5 @@
 // Service worker: l'app funciona sense connexió un cop oberta per primer cop.
-const VERSION = "macros-v20";
+const VERSION = "macros-v21";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "core.js", "foods.js", "gym-db.js", "gym.js", "sync.js", "friends.js", "i18n.js", "firebase-config.js",
   "lib/firebase-app.js", "lib/firebase-auth.js", "lib/firebase-firestore-lite.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/icon-512.png", "icons/badge-96.png", "sounds/bell.mp3", "icons/apple-touch-icon.png"];
@@ -51,4 +51,10 @@ self.addEventListener("notificationclick", e => {
     for (const c of cs) if ("focus" in c) return c.focus();
     return self.clients.openWindow((e.notification.data && e.notification.data.url) || "./");
   }));
+});
+
+// L'app demana tancar la notificació del descans (acabat o substituït)
+self.addEventListener("message", e => {
+  if (!e.data || e.data.type !== "close-noti") return;
+  e.waitUntil(self.registration.getNotifications().then(ns => ns.forEach(n => { if (!n.tag || n.tag === e.data.tag) n.close(); })));
 });
